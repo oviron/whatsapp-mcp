@@ -86,6 +86,7 @@ MCP_TOOLS = {
     "send_contact",
     "send_file",
     "send_message",
+    "send_voice_message",
     "suggest_favorites",
     "update_group_participants",
     "update_group_settings",

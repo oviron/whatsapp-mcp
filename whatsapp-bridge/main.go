@@ -413,9 +413,9 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// Check if we have media to send
 	if mediaPath != "" {
 		// Read media file
-		mediaData, err := os.ReadFile(mediaPath)
+		mediaData, err := readMediaFile(mediaPath)
 		if err != nil {
-			return false, fmt.Sprintf("Error reading media file: %v", err)
+			return false, err.Error()
 		}
 
 		// Determine media type and mime type based on file extension

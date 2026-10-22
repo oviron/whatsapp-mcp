@@ -8,6 +8,7 @@ import requests
 import json
 import audio
 import tts
+from media_paths import MediaPathError, open_media, media_snapshot
 
 # This server runs over MCP's stdio transport, where stdout carries JSON-RPC
 # framing — a stray print() either corrupts that stream or is silently
@@ -452,8 +453,8 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         if not media_path:
             return False, "Media path must be provided"
 
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
+        with open_media(media_path):
+            pass
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
@@ -470,6 +471,8 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except MediaPathError as e:
+        return False, str(e)
     except requests.ReadTimeout:
         return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
     except requests.RequestException as e:
@@ -489,15 +492,18 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         if not media_path:
             return False, "Media path must be provided"
 
-        if not os.path.isfile(media_path):
-            return False, f"Media file not found: {media_path}"
-
-        if not media_path.endswith(".ogg"):
+        if media_path.endswith(".ogg"):
+            with open_media(media_path):
+                pass
+        else:
             try:
-                media_path = audio.convert_to_opus_ogg_temp(media_path)
+                with media_snapshot(media_path) as source:
+                    media_path = audio.convert_to_opus_ogg_temp(source)
                 temp_path = media_path
-            except Exception as e:
-                return False, f"Error converting file to opus ogg. You likely need to install ffmpeg: {str(e)}"
+            except MediaPathError:
+                raise
+            except Exception:
+                return False, "Error converting file to Opus Ogg; check that ffmpeg is installed"
 
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {
@@ -514,6 +520,8 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except MediaPathError as e:
+        return False, str(e)
     except requests.ReadTimeout:
         return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
     except requests.RequestException as e:

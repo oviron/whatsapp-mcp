@@ -116,13 +116,19 @@ def main():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     rows = unavailable_audios(conn, args.limit)
     conn.close()
+    # A retry answered after an earlier run ended left a verified file on disk; transcribe it
+    # instead of asking the phone again.
+    cached = {r[0] for r in rows if recovered_file(r[1], r[0])}
+    if cached:
+        log(f"Already recovered on disk: {len(cached)}")
+    id_to_chat = {r[0]: r[1] for r in rows}
+    rows = [r for r in rows if r[0] not in cached]
     total = len(rows)
     log(f"Unavailable audios to attempt: {total}")
 
     log_offset = os.path.getsize(BRIDGE_LOG)
     recovered_ids, not_on_phone_ids, errored_ids, unclassified_ids = set(), set(), set(), set()
     request_failed_ids = set()
-    id_to_chat = {r[0]: r[1] for r in rows}
 
     for start in range(0, total, args.batch):
         batch = rows[start:start + args.batch]
@@ -167,9 +173,9 @@ def main():
     # Transcribe everything that recovered, straight off disk. Guard per item so
     # one failure (or a stale log line whose ID isn't in this run) can't abort
     # the loop and lose already-recovered work.
-    log(f"Transcribing {len(recovered_ids)} recovered audios...")
+    log(f"Transcribing {len(recovered_ids | cached)} recovered audios...")
     transcribed = empty = missing = tx_failed = 0
-    for msg_id in recovered_ids:
+    for msg_id in recovered_ids | cached:
         chat_jid = id_to_chat.get(msg_id)
         if chat_jid is None:
             continue  # log line from a prior run; not part of this batch
@@ -193,9 +199,9 @@ def main():
     # Mark phone-confirmed-absent distinctly so a future pass can skip them.
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA busy_timeout=5000")
-    for msg_id in not_on_phone_ids:
-        conn.execute("UPDATE messages SET content=? WHERE id=?",
-                     (SENTINEL_NOT_ON_PHONE, msg_id))
+    for msg_id in not_on_phone_ids & id_to_chat.keys():
+        conn.execute("UPDATE messages SET content=? WHERE id=? AND chat_jid=?",
+                     (SENTINEL_NOT_ON_PHONE, msg_id, id_to_chat[msg_id]))
     conn.commit()
     conn.close()
 

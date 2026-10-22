@@ -159,11 +159,11 @@ def sha256_file(path):
 
 def valid_audio_file(path, expected_sha, file_length):
     try:
-        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+        if str(path).endswith(".tmp") or not os.path.isfile(path) or os.path.getsize(path) == 0:
             return False
-        if expected_sha:
-            return sha256_file(path) == expected_sha.upper()
-        return not file_length or os.path.getsize(path) == file_length
+        if file_length and os.path.getsize(path) != file_length:
+            return False
+        return not expected_sha or sha256_file(path) == expected_sha.upper()
     except OSError:
         return False
 

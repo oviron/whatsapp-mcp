@@ -471,7 +471,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			return false, fmt.Sprintf("Error uploading media: %v", err)
 		}
 
-		fmt.Println("Media uploaded", resp)
+		fmt.Println("Media uploaded")
 
 		// Create the appropriate message type based on media type
 		switch mediaType {
@@ -564,18 +564,27 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 		return false, fmt.Sprintf("Error sending message: %v", err)
 	}
 
-	// Persist text outbounds so own-sends appear in the local store.
-	// Multi-device echo via handleMessage doesn't fire on single-device accounts.
-	if messageStore != nil && mediaPath == "" && client.Store != nil && client.Store.ID != nil {
+	persistOutboundMessage(client, messageStore, recipientJID, msg, mediaPath, message, resp, mentions)
+
+	return true, fmt.Sprintf("Message sent to %s", recipient)
+}
+
+func persistOutboundMessage(client *whatsmeow.Client, messageStore *MessageStore, recipientJID types.JID, msg *waProto.Message, mediaPath, message string, resp whatsmeow.SendResponse, mentions []string) {
+	// Multi-device echo does not fire on single-device accounts.
+	if messageStore != nil && client.Store != nil && client.Store.ID != nil {
 		// Same key as the incoming path, or a LID recipient splits the chat in two.
 		chatJID := resolveToPN(client, recipientJID).String()
+		mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength := extractMediaInfo(msg)
+		if mediaPath != "" {
+			filename = filepath.Base(mediaPath)
+		}
 		sender := client.Store.ID.User
 		if ensureErr := messageStore.EnsureChat(chatJID, resp.Timestamp); ensureErr != nil {
 			fmt.Printf("Failed to ensure chat row: %v\n", ensureErr)
 		}
 		if storeErr := messageStore.StoreMessage(
 			resp.ID, chatJID, sender, message, resp.Timestamp, true,
-			"", "", "", nil, nil, nil, 0,
+			mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
 		); storeErr != nil {
 			fmt.Printf("Failed to persist outbound: %v\n", storeErr)
 		} else {
@@ -585,8 +594,6 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			}
 		}
 	}
-
-	return true, fmt.Sprintf("Message sent to %s", recipient)
 }
 
 // Extract media info from a message
@@ -1905,7 +1912,13 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 }
 
 // Function to download media from a message
-func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
+type mediaDownloadClient interface {
+	DownloadToFile(context.Context, whatsmeow.DownloadableMessage, whatsmeow.File) error
+}
+
+func downloadMedia(client mediaDownloadClient, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
+	unlock := lockMediaMessage(chatJID, messageID)
+	defer unlock()
 	// Query the database for the message
 	var mediaType, filename, url string
 	var mediaKey, fileSHA256, fileEncSHA256 []byte
@@ -1937,7 +1950,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Create directory for the chat if it doesn't exist
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, 0700); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
 
@@ -1957,8 +1970,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// Check if file already exists
-	if _, err := os.Stat(localPath); err == nil {
-		// File exists, return it
+	if validMediaFile(localPath, fileLength, fileSHA256) {
 		return true, mediaType, filename, absPath, nil
 	}
 
@@ -1997,18 +2009,15 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 		MediaType:     waMediaType,
 	}
 
-	// Download the media using whatsmeow client
-	mediaData, err := client.Download(context.Background(), downloader)
-	if err != nil {
+	if err := writeMediaFile(localPath, fileLength, fileSHA256, func(file *os.File) error {
+		if client == nil {
+			return whatsmeow.ErrClientIsNil
+		}
+		return client.DownloadToFile(context.Background(), downloader, file)
+	}); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %w", err)
 	}
 
-	// Save the downloaded media to file
-	if err := os.WriteFile(localPath, mediaData, 0644); err != nil {
-		return false, "", "", "", fmt.Errorf("failed to save media file: %v", err)
-	}
-
-	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
 }
 
@@ -3282,7 +3291,12 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := requestMediaRetry(client, messageStore, req.MessageID, req.ChatJID); err != nil {
+		err := requestMediaRetry(client, messageStore, req.MessageID, req.ChatJID)
+		if errors.Is(err, errMediaRetryAlreadyRequested) {
+			json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": err.Error()})
+			return
+		}
+		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success": false, "message": fmt.Sprintf("Failed to request media retry: %s", err.Error()),
@@ -4414,10 +4428,6 @@ func startTranscriptionSweep(interval time.Duration) {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for range ticker.C {
-			// Drop media-retry entries the phone never answered, so unused
-			// decryption keys don't accumulate in memory across a long run.
-			mediaRetryCache.evictOlderThan(30*time.Minute, time.Now())
-
 			// Skip if a previous sweep is still running.
 			if data, err := os.ReadFile(lockPath); err == nil {
 				if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil {
@@ -4485,9 +4495,8 @@ func startTranscriptionSweep(interval time.Duration) {
 }
 
 // mediaRetryEntry holds the info needed to decrypt + download a media retry
-// response. It is keyed by message ID inside mediaRetryCache. The four crypto
-// fields (mediaKey, fileSHA256, fileEncSHA256, fileLength) plus mediaType are
-// consumed together by DownloadMediaWithPath and must travel as a set.
+// response. The four crypto fields (mediaKey, fileSHA256, fileEncSHA256,
+// fileLength) plus mediaType are consumed together and must travel as a set.
 type mediaRetryEntry struct {
 	chatJID       string
 	mediaKey      []byte
@@ -4499,50 +4508,71 @@ type mediaRetryEntry struct {
 	storedAt      time.Time
 }
 
-// retryCache maps message ID -> pending retry entry. All access goes through its
-// methods so the map is never touched without the lock, and consume() evicts on
-// read so entries (which pin a decryption key in memory) don't accumulate.
+// retryCache maps message ID -> pending retry entry, and (chat, message ID) -> when the phone was
+// last asked. All access goes through its methods; consume() evicts on read and store() drops
+// unanswered entries, so key material does not pile up even without the transcription sweep.
 type retryCache struct {
-	mu sync.Mutex // guards m
-	m  map[string]mediaRetryEntry
+	mu        sync.Mutex // guards m and requested
+	m         map[string]mediaRetryEntry
+	requested map[string]time.Time
 }
 
-func (c *retryCache) store(id string, e mediaRetryEntry) {
+func mediaMessageKey(chatJID, id string) string { return chatJID + "\x00" + id }
+
+func (c *retryCache) store(id string, e mediaRetryEntry) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	for key, pending := range c.m {
+		if e.storedAt.Sub(pending.storedAt) >= 30*time.Minute {
+			delete(c.m, key)
+		}
+	}
+	for key, sent := range c.requested {
+		if e.storedAt.Sub(sent) >= time.Hour {
+			delete(c.requested, key)
+		}
+	}
+	// Each retry receipt wakes the phone (and shows "sync interrupted" on iOS): once an hour per message.
+	key := mediaMessageKey(e.chatJID, id)
+	if _, ok := c.requested[key]; ok {
+		return false
+	}
+	if c.requested == nil {
+		c.requested = make(map[string]time.Time)
+	}
+	c.requested[key] = e.storedAt
 	c.m[id] = e
+	return true
 }
 
-// consume returns the entry for id and removes it, so a retry response is
-// handled at most once and the key material is freed.
+// consume returns the entry for id and removes it, so a retry response is handled at most once.
+// The response is matched by message ID alone: the phone may name the chat by its LID.
 func (c *retryCache) consume(id string) (mediaRetryEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e, ok := c.m[id]
-	if ok {
-		delete(c.m, id)
-	}
+	delete(c.m, id)
 	return e, ok
 }
 
-// evictOlderThan drops entries the phone never answered, so a media-retry
-// request that gets no response doesn't leak its key material forever.
-func (c *retryCache) evictOlderThan(maxAge time.Duration, now time.Time) {
+func (c *retryCache) forget(chatJID, id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for id, e := range c.m {
-		if now.Sub(e.storedAt) > maxAge {
-			delete(c.m, id)
-		}
-	}
+	delete(c.m, id)
+	delete(c.requested, mediaMessageKey(chatJID, id))
 }
 
 var mediaRetryCache = &retryCache{m: make(map[string]mediaRetryEntry)}
+var errMediaRetryAlreadyRequested = errors.New("media retry already requested within the last hour")
 
 // requestMediaRetry asks the phone to re-upload media whose CDN reference has
 // expired (download returns 403). The phone responds with an events.MediaRetry
 // carrying a fresh directPath, handled by handleMediaRetry.
-func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) error {
+type mediaRetryClient interface {
+	SendMediaRetryReceipt(context.Context, *types.MessageInfo, []byte) error
+}
+
+func requestMediaRetry(client mediaRetryClient, messageStore *MessageStore, messageID, chatJID string) error {
 	mediaType, filename, _, mediaKey, fileSHA256, fileEncSHA256, fileLength, err := messageStore.GetMediaInfo(messageID, chatJID)
 	if err != nil {
 		return fmt.Errorf("failed to get media info: %v", err)
@@ -4579,11 +4609,16 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 		}
 	}
 
-	mediaRetryCache.store(messageID, mediaRetryEntry{
+	if client == nil {
+		return whatsmeow.ErrClientIsNil
+	}
+	if !mediaRetryCache.store(messageID, mediaRetryEntry{
 		chatJID: chatJID, mediaKey: mediaKey, fileSHA256: fileSHA256,
 		fileEncSHA256: fileEncSHA256, fileLength: fileLength,
 		mediaType: mediaType, filename: filename, storedAt: time.Now(),
-	})
+	}) {
+		return errMediaRetryAlreadyRequested
+	}
 
 	info := &types.MessageInfo{
 		ID: messageID,
@@ -4594,7 +4629,11 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 			IsGroup:  isGroup,
 		},
 	}
-	return client.SendMediaRetryReceipt(context.Background(), info, mediaKey)
+	if err := client.SendMediaRetryReceipt(context.Background(), info, mediaKey); err != nil {
+		mediaRetryCache.forget(chatJID, messageID)
+		return err
+	}
+	return nil
 }
 
 // handleMediaRetry processes the phone's response to a media retry request: on
@@ -4607,7 +4646,7 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 //	MEDIA RETRY <id>: SUCCESS recovered <n> bytes -> <path>
 //	MEDIA RETRY <id>: NOTONPHONE <result>   (phone no longer has the file)
 //	MEDIA RETRY <id>: ERROR <reason>        (terminal local/decrypt failure)
-func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt *events.MediaRetry, logger waLog.Logger) {
+func handleMediaRetry(client mediaDownloadClient, messageStore *MessageStore, evt *events.MediaRetry, logger waLog.Logger) {
 	// consume() evicts the entry so a duplicate response can't re-run the
 	// download and the key material is freed on every path below.
 	entry, ok := mediaRetryCache.consume(evt.MessageID)
@@ -4642,17 +4681,11 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 		return
 	}
 
-	newPath := retryData.GetDirectPath()
-	data, err := client.DownloadMediaWithPath(context.Background(), newPath,
-		entry.fileEncSHA256, entry.fileSHA256, entry.mediaKey,
-		waMediaType, "", false)
-	if err != nil {
-		fmt.Printf("MEDIA RETRY %s: ERROR download with fresh path failed: %v\n", evt.MessageID, err)
-		return
-	}
+	unlock := lockMediaMessage(entry.chatJID, evt.MessageID)
+	defer unlock()
 
 	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(entry.chatJID, ":", "_"))
-	if err := os.MkdirAll(chatDir, 0755); err != nil {
+	if err := os.MkdirAll(chatDir, 0700); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR mkdir failed: %v\n", evt.MessageID, err)
 		return
 	}
@@ -4661,11 +4694,25 @@ func handleMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, evt 
 		fmt.Printf("MEDIA RETRY %s: ERROR %v\n", evt.MessageID, err)
 		return
 	}
-	if err := os.WriteFile(localPath, data, 0644); err != nil {
-		fmt.Printf("MEDIA RETRY %s: ERROR write failed: %v\n", evt.MessageID, err)
+	if err := writeMediaFile(localPath, entry.fileLength, entry.fileSHA256, func(file *os.File) error {
+		if client == nil {
+			return whatsmeow.ErrClientIsNil
+		}
+		return client.DownloadToFile(context.Background(), &MediaDownloader{
+			DirectPath: retryData.GetDirectPath(), MediaKey: entry.mediaKey,
+			FileSHA256: entry.fileSHA256, FileEncSHA256: entry.fileEncSHA256,
+			FileLength: entry.fileLength, MediaType: waMediaType,
+		}, file)
+	}); err != nil {
+		fmt.Printf("MEDIA RETRY %s: ERROR download with fresh path failed: %v\n", evt.MessageID, err)
 		return
 	}
-	fmt.Printf("MEDIA RETRY %s: SUCCESS recovered %d bytes -> %s\n", evt.MessageID, len(data), localPath)
+	info, err := os.Stat(localPath)
+	if err != nil {
+		fmt.Printf("MEDIA RETRY %s: ERROR stat failed: %v\n", evt.MessageID, err)
+		return
+	}
+	fmt.Printf("MEDIA RETRY %s: SUCCESS recovered %d bytes -> %s\n", evt.MessageID, info.Size(), localPath)
 }
 
 // analyzeOggOpus tries to extract duration and generate a simple waveform from an Ogg Opus file

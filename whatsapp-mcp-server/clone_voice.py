@@ -71,6 +71,10 @@ def main():
     ap.add_argument("--out", default="voice-dataset")
     ap.add_argument("--min-sec", type=float, default=2.0)
     ap.add_argument("--max-sec", type=float, default=20.0)
+    ap.add_argument("--min-rate", type=float, default=6.0,
+                    help="min transcript chars per second of audio; below = silence or a bad transcript")
+    ap.add_argument("--max-rate", type=float, default=28.0,
+                    help="max transcript chars per second; widen both for languages with denser or sparser scripts")
     ap.add_argument("--limit", type=int, default=0, help="stop after N accepted clips (0 = all)")
     ap.add_argument("--since", help="only messages on/after this date, e.g. 2025-01-01")
     ap.add_argument("--chat", help="only this chat JID")
@@ -97,12 +101,12 @@ def main():
             skipped["decode"] += 1
             continue
         d = duration(dst)
-        # transcript/duration sanity: pt-BR speech is ~10-22 chars/s; far off = bad transcript or silence
+        # transcript/duration sanity: speech in alphabetic scripts runs ~10-22 chars/s; far off = bad transcript or silence
         if d < a.min_sec:
             skipped["too_short"] += 1
         elif d > a.max_sec:
             skipped["too_long"] += 1
-        elif not 6 <= len(text) / d <= 28:
+        elif not a.min_rate <= len(text) / d <= a.max_rate:
             skipped["bad_rate"] += 1
         else:
             kept.append((mid, dst, text, d))

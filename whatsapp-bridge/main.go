@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"mime"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -3854,36 +3855,27 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 		os.Exit(1)
 	}
 
-	handler := http.DefaultServeMux
-	var finalHandler http.Handler = handler
-	if authToken != "" {
-		finalHandler = requireBearerToken(authToken, handler)
+	readOnly := envBool("API_READONLY")
+	if readOnly {
+		fmt.Println("REST API is read-only (API_READONLY=true)")
 	}
+	finalHandler := apiGuard(authToken, bindAddr, port, readOnly, http.DefaultServeMux)
 
-	// Run server in a goroutine so it doesn't block
+	// Bind before connecting to WhatsApp: a taken port must stop the bridge (and let launchd/systemd retry),
+	// not leave it running without its API.
+	listener, err := net.Listen("tcp", serverAddr)
+	if err != nil {
+		fmt.Printf("FATAL: REST API cannot listen on %s: %v\n", serverAddr, err)
+		os.Exit(1)
+	}
+	// No WriteTimeout: /api/send waits up to 75s for WhatsApp and downloads can take longer.
+	server := &http.Server{Handler: finalHandler, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
 	go func() {
-		if err := http.ListenAndServe(serverAddr, finalHandler); err != nil {
-			fmt.Printf("REST API server error: %v\n", err)
+		if err := server.Serve(listener); err != nil {
+			fmt.Printf("FATAL: REST API server stopped: %v\n", err)
+			os.Exit(1)
 		}
 	}()
-}
-
-// requireBearerToken wraps a handler so every /api/* request must present
-// "Authorization: Bearer <token>". /qr and /qr.png stay open since that's
-// the initial pairing flow, not an authenticated API call.
-func requireBearerToken(token string, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		expected := "Bearer " + token
-		if got := r.Header.Get("Authorization"); got != expected {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 func main() {

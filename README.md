@@ -334,6 +334,8 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
 
    On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page auto-refreshes when a new code is generated. On macOS the QR is also saved to `/tmp/whatsapp-qr.png` and opened in Preview.
 
+   No browser at hand (a VPS, a headless box)? Pair by code instead: start the bridge with `-pair-phone <number in international format>` (or `WHATSAPP_PAIR_PHONE`), and it prints an 8-character code to type on the phone under Linked Devices → Link a Device → Link with phone number instead.
+
 3. **Connect to the MCP server**
 
    ```json
@@ -442,6 +444,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 - **Contacts showing as numbers**: the bridge syncs names on connect. Give it a few seconds after the "Connected" message.
 - **LID contacts not found**: happens when WhatsApp hasn't yet synced the LID→PN mapping locally. Reconnect to trigger a fresh sync.
 - **Bridge lost the session**: on logout (unlinked from the phone, or the session expired) the bridge logs the reason and exits with code 1; under the launchd/systemd service it restarts and serves a fresh QR at `/qr`. When a second bridge connects with the same `store/` WhatsApp drops the first one ("Another client took over this WhatsApp session"): the bridge backs off from 30 s up to 30 min before reconnecting, so stop the duplicate. A temporary ban or an outdated client is logged with the reason; reads keep working from the local database meanwhile. A paired bridge that stays offline for any other reason is reconnected by a watchdog every minute.
+- **Re-pairing cleanly**: stop the bridge service, then run `./whatsapp-bridge -logout` from `whatsapp-bridge/`: it unlinks the device on the phone too and removes the session from `store/whatsapp.db` (deleting the file alone leaves a dead entry under Linked Devices). Start the service again to pair.
 - **Out of sync / re-pairing**: deleting `whatsapp-bridge/store/whatsapp.db` (or re-scanning the QR for any reason) forces WhatsApp to re-deliver up to a year of history. The re-sync keeps existing transcriptions (an incoming empty `content` never overwrites a stored one), but it is still a bulk rewrite of `messages.db`: **back up `whatsapp-bridge/store/messages.db` and `whatsapp.db` first**. Deleting `messages.db` loses every transcription, since the sync brings audio back without text; run `transcribe.py` / `recover_audios.py` afterwards to rebuild them.
 - **Device limit**: WhatsApp limits linked devices. Remove one via Settings → Linked Devices on your phone.
 - **Dev clone or custom port**: point the MCP server at your setup via the `WHATSAPP_BRIDGE_PORT` or `WHATSAPP_API_BASE_URL` env vars.

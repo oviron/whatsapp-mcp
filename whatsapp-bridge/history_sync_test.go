@@ -315,3 +315,25 @@ func TestMediaRetryRejectsUnknownGroupAuthor(t *testing.T) {
 		}
 	}
 }
+
+func TestResyncWithOtherOffsetKeepsLastMessageJoin(t *testing.T) {
+	s := setupChatStore(t)
+	if err := s.EnsureChat("123-456@g.us", ts("2026-10-22T06:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	for _, stamp := range []string{"2026-10-22T10:00:00+03:00", "2026-10-22T07:00:00Z"} {
+		if err := s.StoreMessage("m1", "123-456@g.us", "111", "hello", ts(stamp), false, "", "", "", nil, nil, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.StoreChat("123-456@g.us", "Test group", ts(stamp)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resp, err := listChats(s.db, ChatsRequest{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Chats) != 1 || resp.Chats[0].LastMessage == nil || *resp.Chats[0].LastMessage != "hello" {
+		t.Fatalf("chats = %+v, want last message %q", resp.Chats, "hello")
+	}
+}

@@ -140,7 +140,7 @@ func (store *MessageStore) Close() error {
 func (store *MessageStore) TouchChatLastMessageTime(jid string, lastMessageTime time.Time) error {
 	_, err := store.db.Exec(
 		`UPDATE chats SET last_message_time = ? WHERE jid = ?
-		AND (julianday(last_message_time) IS NULL OR julianday(?) > julianday(last_message_time))`,
+		AND (julianday(last_message_time) IS NULL OR julianday(?) >= julianday(last_message_time))`,
 		lastMessageTime, jid, lastMessageTime,
 	)
 	return err
@@ -222,7 +222,7 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 			name = COALESCE(NULLIF(excluded.name, ''), chats.name),
 			last_message_time = CASE
 				WHEN julianday(chats.last_message_time) IS NULL
-					OR julianday(excluded.last_message_time) > julianday(chats.last_message_time)
+					OR julianday(excluded.last_message_time) >= julianday(chats.last_message_time)
 				THEN excluded.last_message_time ELSE chats.last_message_time END`,
 		jid, name, lastMessageTime,
 	)

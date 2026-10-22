@@ -15,7 +15,7 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 
 ## Regras inegociáveis
 
-- Go **1.26+** (casa com go.mod); recompilar binário após mudar main.go — `go run` é só dev. CGO impede cross-compile do macOS pra Linux/VPS — compilar direto na VPS (tem Go+gcc lá).
+- Go **1.26+** (casa com go.mod); recompilar binário após mudar main.go — `go run` é só dev. CGO impede cross-compile do macOS pra Linux/VPS — compilar direto no host Linux (precisa de Go+gcc lá).
 - REST API liga **127.0.0.1** por padrão; `BIND_ADDR=<ip>` pra expor além de loopback exige `API_AUTH_TOKEN` setado (a bridge recusa subir sem token nesse caso) — nunca bind não-loopback sem token, mesmo em rede privada (Tailscale/VPN não é substituto de auth).
 - `safeMediaPath` **rejeita** componentes com separadores/`..` — não sanitizar silenciosamente.
 - Re-parear/re-sync: `StoreMessage` preserva `content` existente via `COALESCE(NULLIF(...))` (não sobrescreve transcrição com string vazia do sync) — mas faça backup de `messages.db`/`whatsapp.db` antes de qualquer re-pareamento de qualquer forma, é operação real de produção.
@@ -27,7 +27,7 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 
 - [ ] `go build -o whatsapp-bridge .` compila; `go test ./...` passa.
 - [ ] `python3 -m unittest test_transcribe -v` passa.
-- [ ] Mudou main.go? Binário recompilado e bridge reiniciada — local: `launchctl kickstart -k`; VPS: `go build` na própria VPS (CGO não cross-compila) + `systemctl restart whatsapp-bridge-*`.
+- [ ] Mudou main.go? Binário recompilado e bridge reiniciada — local: `launchctl kickstart -k`; Linux: `go build` no próprio host (CGO não cross-compila) + reiniciar o serviço (`systemctl --user restart` se veio do `install.sh --service`).
 - [ ] Sem path pessoal/secret vazando (transcription.env, API keys).
 - [ ] Mudou comportamento de sync/escrita? Conferir impacto em transcrições existentes.
 - [ ] README/install.sh coerentes se mudou onboarding (versão Go, env vars, troubleshooting).
@@ -55,7 +55,7 @@ launchctl kickstart -k gui/$(id -u)/com.whatsapp-mcp.bridge    # reiniciar
 tail -f whatsapp-bridge/bridge.log
 
 # transcrição manual (set -a propaga pro subprocesso; source sozinho não)
-cd whatsapp-mcp-server && set -a && source ../whatsapp-bridge/transcription.env && set +a
+cd whatsapp-mcp-server && set -a && source <INSTALL_DIR>/transcription.env && set +a
 python3 transcribe.py            # backfill
 WHATSAPP_BRIDGE_LOG=../whatsapp-bridge/bridge.log python3 recover_audios.py
 ```

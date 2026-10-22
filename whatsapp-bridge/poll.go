@@ -133,7 +133,9 @@ func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.M
 	vote, err := client.DecryptPollVote(context.Background(), msg)
 	if err != nil {
 		logger.Warnf("Failed to decrypt poll vote for %s: %v", pollID, err)
-		return true
+		// whatsmeow wraps a failed read of whatsapp.db only in this message; a missing or wrong key
+		// stays wrong on redelivery, so only the read is worth retrying.
+		return !strings.Contains(err.Error(), "failed to get original message secret key")
 	}
 	logger.Infof("Poll vote from %s on %s: %d option(s)", voter, pollID, len(vote.GetSelectedOptions()))
 	selected, _ := json.Marshal(optionsForHashes(options, vote.GetSelectedOptions()))

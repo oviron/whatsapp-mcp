@@ -139,6 +139,16 @@ func (s *connectionSupervisor) held() bool {
 	return s.now().Before(s.holdUntil)
 }
 
+// restartForNewQR decides what an unscanned QR code leads to. A ban or a second client during
+// pairing is waited out first; an outdated client cannot pair at all, so a restart would only
+// repeat the refusal and the process stays up for reads instead.
+func (s *connectionSupervisor) restartForNewQR(sleep func(time.Duration)) bool {
+	for s.held() {
+		sleep(time.Minute)
+	}
+	return !s.isStopped()
+}
+
 // failOnPanic reports a panicking handler as failed: whatsmeow recovers the panic itself but then
 // acks the message as handled, dropping it for good.
 func failOnPanic(log waLog.Logger, handler func(any) bool) func(any) bool {

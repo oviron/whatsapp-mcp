@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -188,6 +190,30 @@ func TestStoppedOrHeldDuringRefusals(t *testing.T) {
 	}
 }
 
+func TestQRTimeoutRestartsOnlyWhenPairingCanWork(t *testing.T) {
+	for name, tc := range map[string]struct {
+		evt     any
+		restart bool
+		waited  time.Duration
+	}{
+		"no refusal": {restart: true},
+		"ban":        {evt: &events.TemporaryBan{Expire: 10 * time.Minute}, restart: true, waited: 10 * time.Minute},
+		"outdated":   {evt: &events.ClientOutdated{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSupervisorHarness()
+			if tc.evt != nil {
+				h.handle(tc.evt)
+			}
+			start := h.clock
+			got := h.restartForNewQR(func(d time.Duration) { h.clock = h.clock.Add(d) })
+			if got != tc.restart || h.clock.Sub(start) != tc.waited {
+				t.Fatalf("restart = %v after %v, want %v after %v", got, h.clock.Sub(start), tc.restart, tc.waited)
+			}
+		})
+	}
+}
+
 func TestFailOnPanicReportsFailure(t *testing.T) {
 	handler := failOnPanic(waLog.Noop, func(any) bool { panic("boom") })
 	if handler(&events.Message{}) {
@@ -279,18 +305,43 @@ func TestHandleMessageReportsFailedWrites(t *testing.T) {
 	}
 }
 
+type msgSecrets struct {
+	store.MsgSecretStore
+	err error
+}
+
+func (m msgSecrets) GetMessageSecret(context.Context, types.JID, types.JID, types.MessageID) ([]byte, types.JID, error) {
+	return nil, types.JID{}, m.err
+}
+
 func TestPollVoteReadFailureIsNotAcked(t *testing.T) {
-	vote := &events.Message{Message: &waProto.Message{PollUpdateMessage: &waProto.PollUpdateMessage{
-		PollCreationMessageKey: &waProto.MessageKey{ID: proto.String("p1")},
-	}}}
+	chat := types.NewJID("111", types.DefaultUserServer)
+	vote := &events.Message{
+		Info: types.MessageInfo{MessageSource: types.MessageSource{Chat: chat, Sender: chat}},
+		Message: &waProto.Message{PollUpdateMessage: &waProto.PollUpdateMessage{
+			PollCreationMessageKey: &waProto.MessageKey{ID: proto.String("p1"), RemoteJID: proto.String(chat.String())},
+		}},
+	}
+	client := func(err error) *whatsmeow.Client {
+		return &whatsmeow.Client{Store: &store.Device{MsgSecrets: msgSecrets{err: err}}}
+	}
 	s := setupChatStore(t)
-	if !recordPollVote(&whatsmeow.Client{}, s, vote, "111@s.whatsapp.net", "222", waLog.Noop) {
+	if !recordPollVote(client(nil), s, vote, chat.String(), "222", waLog.Noop) {
 		t.Fatal("a vote on an untracked poll was reported as failed; whatsmeow would redeliver it forever")
+	}
+	if _, err := s.db.Exec(`INSERT INTO polls (id, chat_jid, question, options, selectable_count) VALUES ('p1', ?, 'q', '["a"]', 1)`, chat.String()); err != nil {
+		t.Fatal(err)
+	}
+	if !recordPollVote(client(nil), s, vote, chat.String(), "222", waLog.Noop) {
+		t.Fatal("a vote whose poll key is gone for good was reported as failed")
+	}
+	if recordPollVote(client(errors.New("database is locked")), s, vote, chat.String(), "222", waLog.Noop) {
+		t.Fatal("a failed read of the poll key was acked, dropping the vote")
 	}
 	if _, err := s.db.Exec(`ALTER TABLE polls RENAME TO polls_gone`); err != nil {
 		t.Fatal(err)
 	}
-	if recordPollVote(&whatsmeow.Client{}, s, vote, "111@s.whatsapp.net", "222", waLog.Noop) {
+	if recordPollVote(client(nil), s, vote, chat.String(), "222", waLog.Noop) {
 		t.Fatal("a database failure was acked, dropping the vote")
 	}
 }

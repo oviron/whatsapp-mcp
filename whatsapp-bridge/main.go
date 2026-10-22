@@ -4080,12 +4080,7 @@ func main() {
 		case <-connected:
 			fmt.Println("\nSuccessfully connected and authenticated!")
 		case <-time.After(3 * time.Minute):
-			// A ban or a second client during pairing: wait it out, then restart for a fresh QR code.
-			// An outdated client cannot pair at all, so a restart would only repeat the refusal.
-			for supervisor.held() {
-				time.Sleep(time.Minute)
-			}
-			if !supervisor.isStopped() {
+			if supervisor.restartForNewQR(time.Sleep) {
 				logger.Errorf("Timeout waiting for QR code scan")
 				os.Exit(1)
 			}

@@ -115,7 +115,9 @@ Voice messages are stored with empty searchable text by default. Enable transcri
   #   TRANSCRIPTION_API_MODEL=whisper-large-v3
   ```
 
-Optional: `TRANSCRIPTION_PROMPT` biases both engines toward correct punctuation and domain terms.
+Optional, for both engines:
+- `TRANSCRIPTION_LANGUAGE` — ISO-639-1 code of your voice notes (`pt`, `en`, `es`, ...). Default `auto`: Whisper detects the language per audio. Setting it avoids misdetection on short notes.
+- `TRANSCRIPTION_PROMPT` — biases transcription toward correct punctuation and domain terms. Write it in the language of the audios, e.g. for Portuguese: `A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com pontuação e capitalização corretas.`
 
 **Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:
 - **`go run main.go` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.

@@ -15,7 +15,7 @@ No `whatsapp*` keys found → report "No WhatsApp MCP server configured — run 
 For each configured server, in order:
 
 **a. Install dir exists and has a compiled bridge**
-Check `<--directory>/../whatsapp-bridge/whatsapp-bridge` (or the equivalent path from `WHATSAPP_API_BASE_URL`'s install layout) exists and is executable. Missing → "bridge never built, run install.sh".
+Only when the bridge runs on this machine (`WHATSAPP_API_BASE_URL` unset or pointing at `localhost`/`127.0.0.1`): check `<--directory>/../whatsapp-bridge/whatsapp-bridge` exists and is executable. Missing → "bridge never built, run install.sh". A remote bridge has no local binary; skip to b, which checks it over HTTP.
 
 **b. Bridge process reachable**
 `curl -s -o /dev/null -w "%{http_code}" <WHATSAPP_API_BASE_URL>/qr` (or `/chats` with a POST body `{}` if auth is required — see below). Connection refused/timeout → bridge not running or wrong port. Distinguish these two: `pgrep -fa whatsapp-bridge` tells you if a process exists at all locally; if it does but the port doesn't answer, that's the silent-bind-failure pattern (bridge started before its network interface was ready) — check `ss -tln | grep <port>` and the bridge's own log (`bridge.log` in its install dir) for `bind: cannot assign requested address`.

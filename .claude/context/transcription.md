@@ -12,7 +12,7 @@ Transforma voice messages em `content` pesquisável. **Opt-in** — desligado at
 
 ## Armadilhas
 
-- **medium transcreve foneticamente** ("Proteus" vs "Protheus"). **large-v3** é melhor pra termos TOTVS/Protheus/ADVPL.
+- **medium transcreve foneticamente** ("Proteus" vs "Protheus"). **large-v3** é melhor pra jargão de domínio (ex.: TOTVS/Protheus/ADVPL).
 - `write_content` usa `UPDATE` (não INSERT OR REPLACE) — seguro. O que apaga transcrição é o **bridge no history sync** (ver bridge-go).
 - Três estados de content: texto real / sentinela / '' (vazio = retry no próximo sweep).
 - `CDN_EXPIRY = 21 dias`. `_is_expired(ts)` discrimina falha transitória vs permanente. None/unparseable = assumido expirado (não deixa row em retry eterno).

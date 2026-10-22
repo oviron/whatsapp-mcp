@@ -75,11 +75,16 @@ API_MAX_BYTES = 25 * 1024 * 1024  # OpenAI endpoint hard limit
 
 # Language of the voice notes for both engines: an ISO-639-1 code ("pt", "en", ...)
 # or "auto" to let Whisper detect it per audio.
-TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "").strip().lower() or "auto"
+TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "").strip().lower() or "pt"
 
 # Optional shared prompt — biases both engines toward correct punctuation and domain
 # terms. Write it in the audios' language; a prompt in another language skews the output.
-WHISPER_PROMPT = os.environ.get("TRANSCRIPTION_PROMPT", "")
+WHISPER_PROMPT = os.environ.get(
+    "TRANSCRIPTION_PROMPT",
+    "A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com "
+    "pontuação e capitalização corretas."
+    if TRANSCRIPTION_LANGUAGE == "pt" else "",
+)
 
 
 def engine_ready():

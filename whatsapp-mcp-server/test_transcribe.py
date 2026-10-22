@@ -123,9 +123,24 @@ class LanguageAndPromptTest(unittest.TestCase):
                                  capture_output=True, text=True, check=True)
             return out.stdout.strip()
 
-        self.assertEqual(read(), repr(("auto", "")))
-        self.assertEqual(read(TRANSCRIPTION_LANGUAGE="  "), repr(("auto", "")))
-        self.assertEqual(read(TRANSCRIPTION_LANGUAGE=" PT ", TRANSCRIPTION_PROMPT="Olá."), repr(("pt", "Olá.")))
+        portuguese_prompt = (
+            "A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com "
+            "pontuação e capitalização corretas."
+        )
+        cases = [
+            ({}, ("pt", portuguese_prompt)),
+            ({"TRANSCRIPTION_LANGUAGE": "  "}, ("pt", portuguese_prompt)),
+            ({"TRANSCRIPTION_LANGUAGE": " PT "}, ("pt", portuguese_prompt)),
+            ({"TRANSCRIPTION_LANGUAGE": "auto"}, ("auto", "")),
+            ({"TRANSCRIPTION_LANGUAGE": "en"}, ("en", "")),
+            ({"TRANSCRIPTION_LANGUAGE": " PT ", "TRANSCRIPTION_PROMPT": "Olá."}, ("pt", "Olá.")),
+            ({"TRANSCRIPTION_LANGUAGE": "en", "TRANSCRIPTION_PROMPT": "Meeting notes."}, ("en", "Meeting notes.")),
+            ({"TRANSCRIPTION_PROMPT": ""}, ("pt", "")),
+            ({"TRANSCRIPTION_LANGUAGE": "pt", "TRANSCRIPTION_PROMPT": ""}, ("pt", "")),
+        ]
+        for env, expected in cases:
+            with self.subTest(env=env):
+                self.assertEqual(read(**env), repr(expected))
 
 
 if __name__ == "__main__":

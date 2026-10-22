@@ -9,7 +9,7 @@ MCP server pra WhatsApp pessoal. Bridge Go/whatsmeow (`whatsapp-bridge/`) + serv
 | Bridge Go (whatsmeow, REST, history sync, mídia, segurança) | `.claude/context/bridge-go.md` |
 | Servidor MCP Python (tools, busca, LID) | `.claude/context/mcp-python.md` |
 | Transcrição (whisper local/API, backfill, recovery, sweep) | `.claude/context/transcription.md` |
-| Deploy/operação (VPS systemd, launchd local, build, install.sh, DNS, git) | `.claude/context/deploy.md` |
+| Deploy/operação (VPS systemd, launchd local, build, install.sh, git) | `.claude/context/deploy.md` |
 
 Tarefa multi-área: leia os arquivos relevantes em paralelo.
 

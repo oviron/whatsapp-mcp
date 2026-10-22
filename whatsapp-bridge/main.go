@@ -825,16 +825,19 @@ func protocolAction(m *waProto.Message) (targetID, newContent string, ok bool) {
 }
 
 // Handle regular incoming messages with media support
-// handleMessage stores one live message. It returns false only when a database write failed: with
+// handleMessage stores one live message. It returns false when a database read or write failed: with
 // SynchronousAck the server then gets no ack and redelivers the message after a reconnect, and the
 // decrypted event buffer lets the redelivery through the Signal ratchet a second time.
 func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) bool {
 	if msg.Info.Chat == types.StatusBroadcastJID {
 		return true
 	}
-	var decrypted bool
-	msg, decrypted = decryptIncomingMessage(client, msg, logger)
-	if !decrypted {
+	var decryptErr error
+	msg, decryptErr = decryptIncomingMessage(client, msg, logger)
+	if decryptErr != nil {
+		return false
+	}
+	if msg == nil {
 		return true
 	}
 	if msg.Message.GetProtocolMessage() != nil {

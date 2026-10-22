@@ -9,6 +9,8 @@ import (
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -26,24 +28,38 @@ CREATE TABLE IF NOT EXISTS message_edits (
 );
 `
 
-func decryptIncomingMessage(client *whatsmeow.Client, msg *events.Message, logger waLog.Logger) (*events.Message, bool) {
+type messageSecretReader struct {
+	store.MsgSecretStore
+	err error
+}
+
+func (s *messageSecretReader) GetMessageSecret(ctx context.Context, chat, sender types.JID, id types.MessageID) ([]byte, types.JID, error) {
+	secret, sender, err := s.MsgSecretStore.GetMessageSecret(ctx, chat, sender, id)
+	s.err = err
+	return secret, sender, err
+}
+
+func decryptIncomingMessage(client *whatsmeow.Client, msg *events.Message, logger waLog.Logger) (*events.Message, error) {
 	encrypted := msg.Message.GetSecretEncryptedMessage()
 	if encrypted == nil && msg.Message.GetEncReactionMessage() == nil {
-		return msg, true
+		return msg, nil
 	}
 	// Event and poll edits decrypt to a whole event or poll; stored as is they would duplicate it.
 	if encrypted != nil && encrypted.SecretEncType != nil && encrypted.GetSecretEncType() != waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
 		logger.Infof("Skipping unsupported encrypted %s", encrypted.GetSecretEncType())
-		return nil, false
+		return nil, nil
 	}
 	var body *waProto.Message
 	var err error
 	if client == nil || client.Store == nil || client.Store.MsgSecrets == nil || (encrypted != nil && encrypted.SecretEncType == nil) {
 		logger.Warnf("Cannot decrypt encrypted message; skipping")
-		return nil, false
+		return nil, nil
 	}
+	// whatsmeow wraps store and crypto errors alike; observe reads without mutating the shared client.
+	secrets := &messageSecretReader{MsgSecretStore: client.Store.MsgSecrets}
+	decryptor := &whatsmeow.Client{Store: &store.Device{MsgSecrets: secrets}}
 	if encrypted != nil {
-		body, err = client.DecryptSecretEncryptedMessage(context.Background(), msg)
+		body, err = decryptor.DecryptSecretEncryptedMessage(context.Background(), msg)
 		if err == nil {
 			body = unwrapHistoryMessage(body)
 			if body.GetProtocolMessage() == nil {
@@ -54,16 +70,23 @@ func decryptIncomingMessage(client *whatsmeow.Client, msg *events.Message, logge
 		}
 	} else {
 		var reaction *waProto.ReactionMessage
-		reaction, err = client.DecryptReaction(context.Background(), msg)
+		reaction, err = decryptor.DecryptReaction(context.Background(), msg)
+		if err == nil {
+			reaction.Key = msg.Message.GetEncReactionMessage().GetTargetMessageKey()
+		}
 		body = &waProto.Message{ReactionMessage: reaction}
 	}
 	if err != nil {
+		if secrets.err != nil {
+			logger.Warnf("Cannot read message secret; retrying: %v", err)
+			return nil, err
+		}
 		logger.Warnf("Cannot decrypt encrypted message; skipping: %v", err)
-		return nil, false
+		return nil, nil
 	}
 	decoded := *msg
 	decoded.Message = body
-	return &decoded, true
+	return &decoded, nil
 }
 
 func protocolTimestamp(m *waProto.Message, fallback time.Time) time.Time {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -48,7 +47,7 @@ func encryptedEditEvent(t *testing.T, reaction bool, text string, millis int64, 
 	useCase := whatsmeow.EncSecretMessageEdit
 	if reaction {
 		useCase = whatsmeow.EncSecretReaction
-		plaintext, err = proto.Marshal(&waProto.ReactionMessage{Key: target, Text: proto.String(text), SenderTimestampMS: proto.Int64(millis)})
+		plaintext, err = proto.Marshal(&waProto.ReactionMessage{Text: proto.String(text), SenderTimestampMS: proto.Int64(millis)})
 	} else {
 		body := protoMsg(waProto.ProtocolMessage_MESSAGE_EDIT, "target", &waProto.Message{Conversation: proto.String(text)})
 		body.ProtocolMessage.TimestampMS = proto.Int64(millis)
@@ -136,8 +135,8 @@ func TestEncryptedEditAndReaction(t *testing.T) {
 
 func TestEncryptedFailureIsAcknowledgedWithoutContent(t *testing.T) {
 	for _, reaction := range []bool{false, true} {
-		for _, failure := range []string{"missing secret", "corrupt ciphertext", "store failure", "missing type", "unknown type", "poll edit"} {
-			if reaction && (failure == "unknown type" || failure == "poll edit") {
+		for _, failure := range []string{"missing secret", "corrupt ciphertext", "missing type", "unknown type", "poll edit", "event edit"} {
+			if reaction && (failure == "unknown type" || failure == "poll edit" || failure == "event edit") {
 				continue
 			}
 			t.Run(fmt.Sprint(reaction)+failure, func(t *testing.T) {
@@ -155,10 +154,10 @@ func TestEncryptedFailureIsAcknowledgedWithoutContent(t *testing.T) {
 					event.Message.SecretEncryptedMessage.SecretEncType = waE2E.SecretEncryptedMessage_SecretEncType(999).Enum()
 				case "poll edit":
 					event.Message.SecretEncryptedMessage.SecretEncType = waE2E.SecretEncryptedMessage_POLL_EDIT.Enum()
+				case "event edit":
+					event.Message.SecretEncryptedMessage.SecretEncType = waE2E.SecretEncryptedMessage_EVENT_EDIT.Enum()
 				case "missing secret":
 					client.Store.MsgSecrets = editSecrets{}
-				case "store failure":
-					client.Store.MsgSecrets = editSecrets{err: errors.New("private store error")}
 				case "corrupt ciphertext":
 					if reaction {
 						event.Message.EncReactionMessage.EncPayload = []byte("private ciphertext")
@@ -171,7 +170,7 @@ func TestEncryptedFailureIsAcknowledgedWithoutContent(t *testing.T) {
 					t.Fatal("undecryptable event not acknowledged")
 				}
 				editContent(t, s, "original")
-				if failure != "poll edit" && failure != "unknown type" && len(logger.warnings) != 1 || strings.Contains(strings.Join(logger.warnings, " "), "private content") {
+				if failure != "poll edit" && failure != "event edit" && failure != "unknown type" && len(logger.warnings) != 1 || strings.Contains(strings.Join(logger.warnings, " "), "private content") {
 					t.Fatalf("warnings = %v", logger.warnings)
 				}
 			})

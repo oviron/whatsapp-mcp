@@ -1,5 +1,17 @@
 # WhatsApp para o Claude
 
+> **This fork** ([oviron/whatsapp-mcp](https://github.com/oviron/whatsapp-mcp), branch
+> `combined`) is upstream [rodrigopg/whatsapp-mcp](https://github.com/rodrigopg/whatsapp-mcp)
+> `main` plus four pull requests sent upstream:
+> [#65](https://github.com/rodrigopg/whatsapp-mcp/pull/65) timeouts on bridge calls,
+> [#66](https://github.com/rodrigopg/whatsapp-mcp/pull/66) `whatsapp-bridge/store/` in `.gitignore`,
+> [#67](https://github.com/rodrigopg/whatsapp-mcp/pull/67) native quoted replies and
+> [#68](https://github.com/rodrigopg/whatsapp-mcp/pull/68) native @mentions in `send_message`.
+> Install it as in [Manual install](#manual-install), cloning this branch:
+> `git clone -b combined https://github.com/oviron/whatsapp-mcp.git`, and start the bridge
+> with `go run .` (the bridge is several files, so `go run main.go` does not build).
+> Configuration and everything else are upstream's.
+
 [![CI](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml)
 
 **Seu WhatsApp dentro do Claude (ou ChatGPT).** Peça "o que ficou pendente hoje?" ou "responde o João que eu chego às 15h".

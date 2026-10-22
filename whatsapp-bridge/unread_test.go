@@ -363,3 +363,37 @@ func TestUnreadReceiptsLeaveNoResidue(t *testing.T) {
 		t.Fatalf("read_receipts=%d other chats=%d", receipts, chats)
 	}
 }
+
+// Reading a whole chat covers messages delivered later with an older timestamp (delayed
+// delivery, history with a stale unread count).
+func TestUnreadChatReadThroughCoversLateMessages(t *testing.T) {
+	s := setupChatStore(t)
+	chat := "111@s.whatsapp.net"
+	unreadLive(t, s, "first", chat, false, 100)
+	if err := setChatReadState(s.db, chat, true, time.Unix(200, 0)); err != nil {
+		t.Fatal(err)
+	}
+	unreadLive(t, s, "late", chat, false, 150)
+	assertUnread(t, s, chat, 0, false)
+	handleHistorySync(nil, s, &events.HistorySync{Data: &waProto.HistorySync{Conversations: []*waProto.Conversation{{
+		ID: proto.String(chat), UnreadCount: proto.Uint32(2), Messages: []*waProto.HistorySyncMsg{historyMessage("old", 120)},
+	}}}}, waLog.Noop)
+	assertUnread(t, s, chat, 0, false)
+	unreadLive(t, s, "new", chat, false, 300)
+	assertUnread(t, s, chat, 1, false)
+}
+
+// A receipt for a LID chat with no message yet moves to the number chat once the mapping is
+// known, and the message stored there later is read.
+func TestUnreadLIDReceiptMigrates(t *testing.T) {
+	s := setupChatStore(t)
+	if err := handleReadReceipt(nil, s.db, &events.Receipt{
+		MessageSource: types.MessageSource{Chat: types.NewJID("999", types.HiddenUserServer), IsFromMe: true},
+		Type:          types.ReceiptTypeRead, MessageIDs: []string{"m"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	migrateLIDChats(lidClient(map[string]string{"999": "222"}), s, waLog.Noop)
+	unreadLive(t, s, "m", "222@s.whatsapp.net", false, 100)
+	assertUnread(t, s, "222@s.whatsapp.net", 0, false)
+}

@@ -294,13 +294,15 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	_, err := store.db.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, is_read)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = ? AND message_id = ?)))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = ? AND message_id = ?)
+			OR EXISTS (SELECT 1 FROM chats WHERE jid = ? AND julianday(?) <= julianday(read_through))))
 		ON CONFLICT(id, chat_jid) DO UPDATE SET
 			sender          = COALESCE(NULLIF(excluded.sender, ''), messages.sender),
 			content         = COALESCE(NULLIF(excluded.content, ''), messages.content),
 			timestamp       = excluded.timestamp,
 			is_from_me      = excluded.is_from_me,
-			is_read         = MAX(messages.is_read, CASE WHEN ? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = excluded.chat_jid AND message_id = excluded.id) THEN excluded.is_read ELSE 0 END),
+			is_read         = MAX(messages.is_read, CASE WHEN ? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = excluded.chat_jid AND message_id = excluded.id)
+				OR EXISTS (SELECT 1 FROM chats WHERE jid = excluded.chat_jid AND julianday(excluded.timestamp) <= julianday(read_through)) THEN excluded.is_read ELSE 0 END),
 			media_type      = excluded.media_type,
 			filename        = excluded.filename,
 			url             = excluded.url,
@@ -308,7 +310,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 			file_sha256     = CASE WHEN length(excluded.file_sha256)     > 0 THEN excluded.file_sha256     ELSE messages.file_sha256     END,
 			file_enc_sha256 = CASE WHEN length(excluded.file_enc_sha256) > 0 THEN excluded.file_enc_sha256 ELSE messages.file_enc_sha256 END,
 			file_length     = excluded.file_length`,
-		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, isRead, chatJID, id, updateRead,
+		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, isRead, chatJID, id, chatJID, timestamp, updateRead,
 	)
 	return err
 }

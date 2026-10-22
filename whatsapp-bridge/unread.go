@@ -16,9 +16,13 @@ import (
 
 func migrateReadState(db *sql.DB) error {
 	for _, col := range []struct {
-		table, name string
-		value       int
-	}{{"messages", "is_read", 1}, {"chats", "marked_as_unread", 0}} {
+		table, name, def string
+	}{
+		{"messages", "is_read", "BOOLEAN NOT NULL DEFAULT 1"},
+		{"chats", "marked_as_unread", "BOOLEAN NOT NULL DEFAULT 0"},
+		// Read through this time: a message stored later with an older timestamp is already read.
+		{"chats", "read_through", "TIMESTAMP"},
+	} {
 		rows, err := db.Query("PRAGMA table_info(" + col.table + ")")
 		if err != nil {
 			return err
@@ -40,7 +44,7 @@ func migrateReadState(db *sql.DB) error {
 			return err
 		}
 		if !found {
-			if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s BOOLEAN NOT NULL DEFAULT %d", col.table, col.name, col.value)); err != nil {
+			if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", col.table, col.name, col.def)); err != nil {
 				return err
 			}
 		}
@@ -92,6 +96,9 @@ func setChatReadState(db *sql.DB, chat string, read bool, through time.Time) err
 	defer tx.Rollback()
 	if read {
 		if _, err := tx.Exec(`UPDATE messages SET is_read = 1 WHERE chat_jid = ? AND is_from_me = 0 AND julianday(timestamp) <= julianday(?)`, chat, through); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE chats SET read_through = ? WHERE jid = ? AND (read_through IS NULL OR julianday(read_through) < julianday(?))`, through, chat, through); err != nil {
 			return err
 		}
 	}

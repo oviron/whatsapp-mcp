@@ -54,8 +54,10 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 	if client == nil || store == nil || store.db == nil {
 		return
 	}
+	// A read receipt or reaction can arrive for a LID chat before any message, so it has no chats row.
 	lidChats, err := queryStrings(store.db, `SELECT jid FROM chats WHERE jid LIKE '%@lid'
-		UNION SELECT chat_jid FROM reactions WHERE chat_jid LIKE '%@lid'`)
+		UNION SELECT chat_jid FROM reactions WHERE chat_jid LIKE '%@lid'
+		UNION SELECT chat_jid FROM read_receipts WHERE chat_jid LIKE '%@lid'`)
 	if err != nil {
 		logger.Warnf("LID migration: failed to list LID chats: %v", err)
 		return
@@ -132,11 +134,15 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 			SELECT ?1, ?2, l.id || '_' || l.filename, l.id || '_' || COALESCE(NULLIF(p.filename, ''), l.filename)
 			FROM messages l LEFT JOIN messages p ON p.chat_jid = ?2 AND p.id = l.id
 			WHERE l.chat_jid = ?1 AND COALESCE(l.filename, '') != ''`,
-		`INSERT INTO chats (jid, name, last_message_time, marked_as_unread)
-			SELECT ?2, name, last_message_time, marked_as_unread FROM chats WHERE jid = ?1
+		`INSERT INTO chats (jid, name, last_message_time, marked_as_unread, read_through)
+			SELECT ?2, name, last_message_time, marked_as_unread, read_through FROM chats WHERE jid = ?1
 			ON CONFLICT(jid) DO UPDATE SET
 				name = COALESCE(NULLIF(chats.name, ''), excluded.name),
 				marked_as_unread = MAX(chats.marked_as_unread, excluded.marked_as_unread),
+				read_through = CASE
+					WHEN julianday(chats.read_through) IS NULL
+						OR julianday(excluded.read_through) > julianday(chats.read_through)
+					THEN excluded.read_through ELSE chats.read_through END,
 				last_message_time = CASE
 					WHEN julianday(chats.last_message_time) IS NULL
 						OR julianday(excluded.last_message_time) > julianday(chats.last_message_time)

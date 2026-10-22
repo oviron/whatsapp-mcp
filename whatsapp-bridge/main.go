@@ -1859,8 +1859,18 @@ func leaveWhatsAppGroup(client *whatsmeow.Client, jidStr string) LeaveGroupRespo
 type DownloadMediaResponse struct {
 	Success  bool   `json:"success"`
 	Message  string `json:"message"`
+	Reason   string `json:"reason,omitempty"`
 	Filename string `json:"filename,omitempty"`
 	Path     string `json:"path,omitempty"`
+}
+
+func downloadMediaFailureReason(err error) string {
+	if errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith403) ||
+		errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) ||
+		errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410) {
+		return "media_gone"
+	}
+	return ""
 }
 
 // Store additional media info in the database
@@ -2051,7 +2061,7 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Download the media using whatsmeow client
 	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
-		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
+		return false, "", "", "", fmt.Errorf("failed to download media: %w", err)
 	}
 
 	// Save the downloaded media to file
@@ -3290,6 +3300,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			json.NewEncoder(w).Encode(DownloadMediaResponse{
 				Success: false,
 				Message: fmt.Sprintf("Failed to download media: %s", errMsg),
+				Reason:  downloadMediaFailureReason(err),
 			})
 			return
 		}

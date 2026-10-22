@@ -117,6 +117,7 @@ Voice messages are stored with empty searchable text by default. Enable transcri
 
 Optional, for both engines:
 - `TRANSCRIPTION_LANGUAGE` — ISO-639-1 code of your voice notes (`pt`, `en`, `es`, ...). Default `auto`: Whisper detects the language per audio. Setting it avoids misdetection on short notes.
+- `TRANSCRIPTION_TIMEOUT` — seconds one local whisper run may take before that audio counts as failed and the sweep moves on (default `600`; ffmpeg gets 120 s).
 - `TRANSCRIPTION_PROMPT` — biases transcription toward correct punctuation and domain terms. Write it in the language of the audios, e.g. for Portuguese: `A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com pontuação e capitalização corretas.`
 
 **Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:

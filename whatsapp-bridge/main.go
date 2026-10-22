@@ -1076,6 +1076,13 @@ func handleReact(client messageActionClient, messageStore *MessageStore) http.Ha
 			json.NewEncoder(w).Encode(MarkChatResponse{Success: false, Message: fmt.Sprintf("SendMessage error: %v", err)})
 			return
 		}
+		// WhatsApp does not echo a reaction back to the device that sent it.
+		if own := client.OwnID(); messageStore != nil && own != nil {
+			chat := client.NormalizeChat(chatJID).String()
+			if err := messageStore.StoreReaction(chat, req.MessageID, own.User, req.Emoji, builtMsg.GetReactionMessage().GetSenderTimestampMS(), time.Now()); err != nil {
+				ownActionLogger.Warnf("Failed to store own reaction: %v", err)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(MarkChatResponse{Success: true, Message: fmt.Sprintf("Reaction sent to message %s", req.MessageID)})
 	}

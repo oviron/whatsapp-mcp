@@ -193,7 +193,8 @@ class TranscribeCacheTest(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"x")
 
     def test_timeout_is_per_message_and_keeps_audio(self):
-        paths = [self.audio("first"), self.audio("second")]
+        # Newest first: the failing audio runs first, so the second proves the loop goes on.
+        paths = [self.audio("first", timestamp="2000-01-02T00:00:00Z"), self.audio("second")]
         self.tx.side_effect = [subprocess.TimeoutExpired("whisper", 600), "second transcript"]
         transcribe.main()
         with sqlite3.connect(self.db) as conn:

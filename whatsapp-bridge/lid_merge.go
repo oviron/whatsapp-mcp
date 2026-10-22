@@ -164,8 +164,9 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 			WHERE messages.chat_jid = ?2 AND messages.id = l.id`,
 		`UPDATE OR IGNORE messages SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM messages WHERE chat_jid = ?1`,
-		`UPDATE messages SET is_read = 1 WHERE chat_jid = ?2 AND EXISTS (
-			SELECT 1 FROM read_receipts r WHERE r.chat_jid = ?2 AND r.message_id = messages.id)`,
+		`UPDATE messages SET is_read = 1 WHERE chat_jid = ?2 AND (EXISTS (
+			SELECT 1 FROM read_receipts r WHERE r.chat_jid = ?2 AND r.message_id = messages.id)
+			OR (is_from_me = 0 AND julianday(timestamp) <= julianday((SELECT read_through FROM chats WHERE jid = ?2))))`,
 		`UPDATE OR IGNORE message_mentions SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM message_mentions WHERE chat_jid = ?1`,
 		`UPDATE OR IGNORE polls SET chat_jid = ?2 WHERE chat_jid = ?1`,

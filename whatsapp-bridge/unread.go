@@ -94,6 +94,10 @@ func setChatReadState(db *sql.DB, chat string, read bool, through time.Time) err
 		return err
 	}
 	defer tx.Rollback()
+	// The read may arrive before the chat's first message; its boundary must outlive that.
+	if _, err := tx.Exec(`INSERT OR IGNORE INTO chats (jid, name) VALUES (?, '')`, chat); err != nil {
+		return err
+	}
 	if read {
 		if _, err := tx.Exec(`UPDATE messages SET is_read = 1 WHERE chat_jid = ? AND is_from_me = 0 AND julianday(timestamp) <= julianday(?)`, chat, through); err != nil {
 			return err

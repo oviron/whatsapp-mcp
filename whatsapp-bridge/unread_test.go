@@ -397,3 +397,32 @@ func TestUnreadLIDReceiptMigrates(t *testing.T) {
 	unreadLive(t, s, "m", "222@s.whatsapp.net", false, 100)
 	assertUnread(t, s, "222@s.whatsapp.net", 0, false)
 }
+
+func TestUnreadReadBeforeFirstMessage(t *testing.T) {
+	s := setupChatStore(t)
+	chat := "111@s.whatsapp.net"
+	if err := setChatReadState(s.db, chat, true, time.Unix(200, 0)); err != nil {
+		t.Fatal(err)
+	}
+	unreadLive(t, s, "late", chat, false, 150)
+	assertUnread(t, s, chat, 0, false)
+}
+
+func TestUnreadLIDMergeAppliesReadThrough(t *testing.T) {
+	for _, readLID := range []bool{true, false} {
+		s := setupChatStore(t)
+		lid, pn := "999@lid", "222@s.whatsapp.net"
+		read, unread := pn, lid
+		if readLID {
+			read, unread = lid, pn
+		}
+		unreadLive(t, s, "m", unread, false, 150)
+		if err := setChatReadState(s.db, read, true, time.Unix(200, 0)); err != nil {
+			t.Fatal(err)
+		}
+		if err := mergeLIDChat(s.db, lid, pn); err != nil {
+			t.Fatal(err)
+		}
+		assertUnread(t, s, pn, 0, false)
+	}
+}

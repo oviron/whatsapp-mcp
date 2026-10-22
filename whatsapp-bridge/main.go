@@ -4008,21 +4008,22 @@ func main() {
 		}
 
 		// Print QR code for pairing with phone
-		pairingCodeShown := false
+		prompt := pairingPrompt{phone: opts.pairPhone, request: func(phone string) (string, error) {
+			return client.PairPhone(context.Background(), phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+		}}
 		for evt := range qrChan {
-			if evt.Event == "code" && opts.pairPhone != "" && !pairingCodeShown {
-				// The code has to be requested on a live login socket, which the first QR event marks.
-				code, err := client.PairPhone(context.Background(), opts.pairPhone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
-				if err == nil {
-					pairingCodeShown = true
-					fmt.Printf("\nPairing code: %s\nOn the phone: WhatsApp → Linked devices → Link a device → Link with phone number instead.\n", code)
-				} else {
+			if evt.Event == "code" {
+				code, showQR, err := prompt.onQR()
+				if err != nil {
 					logger.Errorf("Pairing code request failed (%v); showing a QR code instead", err)
-					opts.pairPhone = ""
 					fmt.Printf("\nOpen http://localhost:%d/qr in your browser to scan the QR code.\n", bridgePort)
 				}
-			}
-			if evt.Event == "code" && !pairingCodeShown {
+				if code != "" {
+					fmt.Printf("\nPairing code: %s\nOn the phone: WhatsApp → Linked devices → Link a device → Link with phone number instead.\n", code)
+				}
+				if !showQR {
+					continue
+				}
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 

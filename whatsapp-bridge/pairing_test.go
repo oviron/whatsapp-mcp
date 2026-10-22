@@ -57,3 +57,40 @@ func TestLogoutBridge(t *testing.T) {
 		})
 	}
 }
+
+func TestPairingPrompt(t *testing.T) {
+	type step struct {
+		code   string
+		showQR bool
+		err    bool
+	}
+	run := func(phone string, fail bool, events int) ([]step, int) {
+		requests := 0
+		p := pairingPrompt{phone: phone, request: func(string) (string, error) {
+			requests++
+			if fail {
+				return "", errors.New("boom")
+			}
+			return "ABCD-EFGH", nil
+		}}
+		var got []step
+		for range events {
+			code, showQR, err := p.onQR()
+			got = append(got, step{code, showQR, err != nil})
+		}
+		return got, requests
+	}
+
+	got, n := run("", false, 2)
+	if n != 0 || got[0] != (step{showQR: true}) || got[1] != (step{showQR: true}) {
+		t.Fatalf("without a phone: %+v, %d requests; want QR every time, no request", got, n)
+	}
+	got, n = run("79990001122", false, 3)
+	if n != 1 || got[0] != (step{code: "ABCD-EFGH"}) || got[1] != (step{}) || got[2] != (step{}) {
+		t.Fatalf("with a phone: %+v, %d requests; want the code once, then nothing", got, n)
+	}
+	got, n = run("79990001122", true, 2)
+	if n != 1 || got[0] != (step{showQR: true, err: true}) || got[1] != (step{showQR: true}) {
+		t.Fatalf("failed request: %+v, %d requests; want the error once, then QR codes", got, n)
+	}
+}

@@ -24,6 +24,31 @@ func parseBridgeOptions(args []string) (bridgeOptions, error) {
 	return o, fs.Parse(args)
 }
 
+// pairingPrompt decides, for each QR event, what to show. With a phone number the first event asks
+// for a pairing code (it needs the live login socket that event marks) and later QR codes stay
+// hidden; if the request fails, pairing falls back to QR codes.
+type pairingPrompt struct {
+	phone     string
+	request   func(phone string) (string, error)
+	codeShown bool
+}
+
+func (p *pairingPrompt) onQR() (code string, showQR bool, err error) {
+	if p.codeShown {
+		return "", false, nil
+	}
+	if p.phone == "" {
+		return "", true, nil
+	}
+	code, err = p.request(p.phone)
+	if err != nil {
+		p.phone = ""
+		return "", true, err
+	}
+	p.codeShown = true
+	return code, false, nil
+}
+
 type logoutClient interface {
 	IsPaired() bool
 	Connect() error

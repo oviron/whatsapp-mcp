@@ -2618,10 +2618,14 @@ type MessagesRequest struct {
 	Query             *string `json:"query"`
 	Limit             int     `json:"limit"`
 	Page              int     `json:"page"`
+	IncludeContext    bool    `json:"include_context"`
+	ContextBefore     int     `json:"context_before"`
+	ContextAfter      int     `json:"context_after"`
 }
 
 type MessagesResponse struct {
-	Messages []APIMessage `json:"messages"`
+	Messages        []APIMessage `json:"messages"`
+	ContextIncluded bool         `json:"context_included,omitempty"`
 }
 
 // errInvalidRequest marks errors that should surface as 400 (bad input) to
@@ -2741,6 +2745,36 @@ func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (Messa
 	queryParts = append(queryParts, "ORDER BY julianday(messages.timestamp) DESC, messages.rowid DESC", "LIMIT ? OFFSET ?")
 	params = append(params, limit, offset)
 
+	if req.IncludeContext {
+		before, after := req.ContextBefore, req.ContextAfter
+		if before <= 0 {
+			before = 5
+		}
+		if after <= 0 {
+			after = 5
+		}
+		queryParts[0] = `SELECT messages.rowid AS target_rowid, messages.chat_jid, messages.timestamp FROM messages`
+		query := `WITH matched AS (` + strings.Join(queryParts, " ") + `),
+			ranked AS (
+				SELECT rowid AS message_rowid, chat_jid,
+					ROW_NUMBER() OVER (PARTITION BY chat_jid ORDER BY julianday(timestamp), rowid) AS position
+				FROM messages WHERE chat_jid IN (SELECT chat_jid FROM matched)
+			)
+			SELECT messages.timestamp, messages.sender, chats.name, messages.content,
+				messages.is_from_me, chats.jid, messages.id, messages.media_type
+			FROM matched
+			JOIN ranked target ON target.message_rowid = matched.target_rowid
+			JOIN ranked context ON context.chat_jid = target.chat_jid
+				AND context.position BETWEEN target.position - ? AND target.position + ?
+			JOIN messages ON messages.rowid = context.message_rowid
+			JOIN chats ON chats.jid = messages.chat_jid
+			ORDER BY julianday(matched.timestamp) DESC, matched.target_rowid DESC,
+				CASE WHEN context.position < target.position THEN 0 ELSE 1 END,
+				CASE WHEN context.position < target.position THEN -context.position ELSE context.position END`
+		queryParts = []string{query}
+		params = append(params, before, after)
+	}
+
 	rows, err := db.Query(strings.Join(queryParts, " "), params...)
 	if err != nil {
 		return MessagesResponse{}, err
@@ -2748,12 +2782,17 @@ func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (Messa
 	defer rows.Close()
 
 	messages := []APIMessage{}
+	seen := map[[2]string]bool{}
 	for rows.Next() {
 		msg, err := scanAPIMessageRow(rows)
 		if err != nil {
 			return MessagesResponse{}, err
 		}
-		messages = append(messages, msg)
+		key := [2]string{msg.ChatJID, msg.ID}
+		if !seen[key] {
+			messages = append(messages, msg)
+			seen[key] = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return MessagesResponse{}, err
@@ -2761,7 +2800,7 @@ func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (Messa
 	if err := loadReactions(db, messages); err != nil {
 		return MessagesResponse{}, err
 	}
-	return MessagesResponse{Messages: messages}, nil
+	return MessagesResponse{Messages: messages, ContextIncluded: req.IncludeContext}, nil
 }
 
 // ---- /api/message_context ----

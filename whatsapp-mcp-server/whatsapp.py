@@ -352,40 +352,16 @@ def list_messages(
         "limit": limit,
         "page": page,
     }
+    if include_context:
+        payload.update(include_context=True, context_before=context_before, context_after=context_after)
 
     result = _api_post("/messages", payload)
-    messages = [_message_from_dict(m) for m in result.get("messages", [])]
-
-    if include_context and messages:
-        messages_with_context = []
-        context_failures = []
-        for msg in messages:
-            try:
-                context = get_message_context(msg.id, context_before, context_after)
-                messages_with_context.extend(context.before)
-                messages_with_context.append(context.message)
-                messages_with_context.extend(context.after)
-            except BridgeError:
-                raise
-            except Exception as e:
-                # A single failed context lookup shouldn't sink the whole batch -
-                # fall back to the bare message. But unlike a genuine "not found"
-                # (which get_message_context itself distinguishes), any failure here
-                # silently degrades results the caller can't otherwise detect, so
-                # surface it in the response text instead of only a stdout print
-                # (this server runs over stdio, where stdout is the JSON-RPC channel,
-                # not a readable log).
-                context_failures.append(f"{msg.id} ({e})")
-                messages_with_context.append(msg)
-
-        output = format_messages_list(messages_with_context, show_chat_info=True)
-        if context_failures:
-            output += (
-                f"\n[Warning: context lookup failed for {len(context_failures)} message(s), "
-                f"showing them without surrounding context: {'; '.join(context_failures)}]"
-            )
-        return output
-
+    if include_context and result.get("context_included") is not True:
+        raise BridgeError("Bridge does not support batched message context; update the bridge")
+    data = result.get("messages")
+    if not isinstance(data, list) or any(not isinstance(m, dict) for m in data):
+        raise BridgeError("Bridge returned an invalid messages response")
+    messages = [_message_from_dict(m) for m in data]
     return format_messages_list(messages, show_chat_info=True)
 
 

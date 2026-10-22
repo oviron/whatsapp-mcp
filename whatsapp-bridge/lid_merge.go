@@ -132,15 +132,19 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 			SELECT ?1, ?2, l.id || '_' || l.filename, l.id || '_' || COALESCE(NULLIF(p.filename, ''), l.filename)
 			FROM messages l LEFT JOIN messages p ON p.chat_jid = ?2 AND p.id = l.id
 			WHERE l.chat_jid = ?1 AND COALESCE(l.filename, '') != ''`,
-		`INSERT INTO chats (jid, name, last_message_time)
-			SELECT ?2, name, last_message_time FROM chats WHERE jid = ?1
+		`INSERT INTO chats (jid, name, last_message_time, marked_as_unread)
+			SELECT ?2, name, last_message_time, marked_as_unread FROM chats WHERE jid = ?1
 			ON CONFLICT(jid) DO UPDATE SET
 				name = COALESCE(NULLIF(chats.name, ''), excluded.name),
+				marked_as_unread = MAX(chats.marked_as_unread, excluded.marked_as_unread),
 				last_message_time = CASE
 					WHEN julianday(chats.last_message_time) IS NULL
 						OR julianday(excluded.last_message_time) > julianday(chats.last_message_time)
 					THEN excluded.last_message_time ELSE chats.last_message_time END`,
+		`UPDATE OR IGNORE read_receipts SET chat_jid = ?2 WHERE chat_jid = ?1`,
+		`DELETE FROM read_receipts WHERE chat_jid = ?1`,
 		`UPDATE messages SET
+				is_read = MAX(messages.is_read, l.is_read),
 				sender = COALESCE(NULLIF(messages.sender, ''), l.sender),
 				content = COALESCE(NULLIF(messages.content, ''), l.content),
 				media_type = COALESCE(NULLIF(messages.media_type, ''), l.media_type),
@@ -154,6 +158,8 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 			WHERE messages.chat_jid = ?2 AND messages.id = l.id`,
 		`UPDATE OR IGNORE messages SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM messages WHERE chat_jid = ?1`,
+		`UPDATE messages SET is_read = 1 WHERE chat_jid = ?2 AND EXISTS (
+			SELECT 1 FROM read_receipts r WHERE r.chat_jid = ?2 AND r.message_id = messages.id)`,
 		`UPDATE OR IGNORE message_mentions SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM message_mentions WHERE chat_jid = ?1`,
 		`UPDATE OR IGNORE polls SET chat_jid = ?2 WHERE chat_jid = ?1`,

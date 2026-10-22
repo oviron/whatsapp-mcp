@@ -15,14 +15,14 @@ class ReadQueriesTest(unittest.TestCase):
         self.db = Path(self.directory.name) / "messages.db"
         self.conn = sqlite3.connect(self.db)
         self.addCleanup(self.conn.close)
-        self.conn.execute("CREATE TABLE messages (id, chat_jid, content, filename, timestamp, is_from_me, media_type, file_sha256)")
+        self.conn.execute("CREATE TABLE messages (id, chat_jid, content, filename, timestamp, is_from_me, media_type, file_sha256, file_length)")
         for mid, at in [
             ("old", "2026-10-01 10:00:00+03:00"),
             ("target", "2026-10-01 08:00:00+00:00"),
             ("tie", "2026-10-01 05:00:00-03:00"),
             ("new", "2026-10-01 06:00:00-03:00"),
         ]:
-            self.conn.execute("INSERT INTO messages VALUES (?, 'test', '', 'voice.ogg', ?, 1, 'audio', NULL)", (mid, at))
+            self.conn.execute("INSERT INTO messages VALUES (?, 'test', '', 'voice.ogg', ?, 1, 'audio', NULL, NULL)", (mid, at))
         self.conn.commit()
 
     def test_pending_audios(self):

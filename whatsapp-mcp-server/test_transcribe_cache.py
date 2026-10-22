@@ -194,7 +194,13 @@ class TranscribeCacheTest(unittest.TestCase):
 
     def test_timeout_is_per_message_and_keeps_audio(self):
         paths = [self.audio("first"), self.audio("second")]
-        self.tx.side_effect = [subprocess.TimeoutExpired("whisper", 600), "second transcript"]
+
+        def transcribe_one(path, media_type):  # by path: rows with equal timestamps come newest-rowid first
+            if path == str(paths[0]):
+                raise subprocess.TimeoutExpired("whisper", 600)
+            return "second transcript"
+
+        self.tx.side_effect = transcribe_one
         transcribe.main()
         with sqlite3.connect(self.db) as conn:
             contents = [r[0] for r in conn.execute("SELECT content FROM messages ORDER BY rowid")]

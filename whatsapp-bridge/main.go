@@ -757,11 +757,13 @@ func protocolAction(m *waProto.Message) (targetID, newContent string, ok bool) {
 // the event's, and for others' messages the stored sender must be the event's
 // sender (otherwise any group member could rewrite anyone's message).
 func (store *MessageStore) ApplyEdit(id, chatJID, content string, fromMe bool, sender string) error {
+	// Rows stored before senderKey hold an unresolved LID author as the bare user.
+	legacy := strings.TrimSuffix(sender, "@"+types.HiddenUserServer)
 	_, err := store.db.Exec(
 		`UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?
-		 AND is_from_me = ? AND (is_from_me = 1 OR sender = ?)
+		 AND is_from_me = ? AND (is_from_me = 1 OR sender IN (?, ?))
 		 AND (? = ? OR COALESCE(media_type, '') != 'audio')`,
-		content, id, chatJID, fromMe, sender, content, revokedContent)
+		content, id, chatJID, fromMe, sender, legacy, content, revokedContent)
 	return err
 }
 

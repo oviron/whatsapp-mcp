@@ -59,10 +59,21 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 			logger.Warnf("LID migration: %s left as is: %v", lid, err)
 			continue
 		}
-		if err := moveChatMedia(lid, pn.String()); err != nil {
+		merged++
+	}
+	// Media moves after the chat's rows: a crash in between leaves a LID directory whose chat is
+	// gone, which this picks up on the next start.
+	lidDirs, _ := filepath.Glob(filepath.Join("store", "*@"+types.HiddenUserServer))
+	for _, dir := range lidDirs {
+		lid := filepath.Base(dir)
+		lidJID, err := types.ParseJID(lid)
+		pn := resolveToPN(client, lidJID)
+		if err != nil || pn.Server != types.DefaultUserServer || chatExists(store.db, lid) {
+			continue
+		}
+		if err := moveChatMedia(store.db, lid, pn.String()); err != nil {
 			logger.Warnf("LID migration: media of %s not fully moved: %v", lid, err)
 		}
-		merged++
 	}
 	senders, err := migrateLIDSenders(client, store.db)
 	if err != nil {
@@ -110,6 +121,10 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 		`DELETE FROM message_mentions WHERE chat_jid = ?1`,
 		`UPDATE OR IGNORE polls SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM polls WHERE chat_jid = ?1`,
+		// A voter's newer vote wins, whichever key it was stored under.
+		`DELETE FROM poll_votes AS p WHERE chat_jid = ?2 AND EXISTS (SELECT 1 FROM poll_votes l
+				WHERE l.chat_jid = ?1 AND l.poll_id = p.poll_id AND l.voter = p.voter
+				AND julianday(l.timestamp) > julianday(p.timestamp))`,
 		`UPDATE OR IGNORE poll_votes SET chat_jid = ?2 WHERE chat_jid = ?1`,
 		`DELETE FROM poll_votes WHERE chat_jid = ?1`,
 		`UPDATE OR IGNORE favorites SET chat_jid = ?2 WHERE chat_jid = ?1`, // a decision on the number wins
@@ -127,8 +142,9 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 }
 
 // moveChatMedia moves downloaded media from the LID chat's directory to the phone-number one, so
-// the cache (often the only copy once the CDN expired) stays where downloadMedia looks.
-func moveChatMedia(lid, pn string) error {
+// the cache (often the only copy once the CDN expired) stays where downloadMedia looks: under
+// <id>_<filename> of the merged row, whose filename may come from the phone-number copy.
+func moveChatMedia(db *sql.DB, lid, pn string) error {
 	from := filepath.Join("store", strings.ReplaceAll(lid, ":", "_"))
 	to := filepath.Join("store", strings.ReplaceAll(pn, ":", "_"))
 	entries, err := os.ReadDir(from)
@@ -142,7 +158,7 @@ func moveChatMedia(lid, pn string) error {
 	}
 	var kept int
 	for _, e := range entries {
-		dst := filepath.Join(to, e.Name())
+		dst := filepath.Join(to, mergedMediaName(db, pn, e.Name()))
 		if _, err := os.Lstat(dst); err == nil {
 			kept++
 			continue
@@ -157,14 +173,42 @@ func moveChatMedia(lid, pn string) error {
 	return os.Remove(from)
 }
 
-// migrateLIDSenders rewrites authors stored as a LID (whole JID, or a bare user from before
-// senderKey) to the phone number once the mapping is known.
+// mergedMediaName is the cache name for a moved file: <id>_<filename> of the row it belongs to in
+// the merged chat, or the name as is when no row claims it.
+func mergedMediaName(db *sql.DB, chat, name string) string {
+	for i := strings.Index(name, "_"); i > 0; i = nextUnderscore(name, i) {
+		var filename string
+		if db.QueryRow(`SELECT filename FROM messages WHERE chat_jid = ? AND id = ?`, chat, name[:i]).Scan(&filename) == nil {
+			if path, err := safeMediaPath(".", name[:i], filename); err == nil {
+				return filepath.Base(path)
+			}
+			return name
+		}
+	}
+	return name
+}
+
+func nextUnderscore(s string, after int) int {
+	if j := strings.Index(s[after+1:], "_"); j >= 0 {
+		return after + 1 + j
+	}
+	return -1
+}
+
+func chatExists(db *sql.DB, jid string) bool {
+	var n int
+	return db.QueryRow(`SELECT COUNT(*) FROM chats WHERE jid = ?`, jid).Scan(&n) == nil && n > 0
+}
+
+// migrateLIDSenders rewrites authors and poll voters stored as a LID (whole JID, or a bare user
+// from before senderKey) to the phone number once the mapping is known.
 func migrateLIDSenders(client *whatsmeow.Client, db *sql.DB) (int, error) {
 	if client == nil || client.Store == nil || client.Store.LIDs == nil {
 		return 0, nil
 	}
-	senders, err := queryStrings(db, `SELECT DISTINCT sender FROM messages
-		WHERE sender != '' AND (sender LIKE '%@`+types.HiddenUserServer+`' OR sender NOT LIKE '%@%')`)
+	lidLike := `LIKE '%@` + types.HiddenUserServer + `'`
+	senders, err := queryStrings(db, `SELECT sender FROM messages WHERE sender != '' AND (sender `+lidLike+` OR sender NOT LIKE '%@%')
+		UNION SELECT voter FROM poll_votes WHERE voter != '' AND (voter `+lidLike+` OR voter NOT LIKE '%@%')`)
 	if err != nil {
 		return 0, err
 	}
@@ -177,12 +221,33 @@ func migrateLIDSenders(client *whatsmeow.Client, db *sql.DB) (int, error) {
 		if err != nil || pn.IsEmpty() {
 			continue
 		}
-		if _, err := db.Exec("UPDATE messages SET sender = ? WHERE sender = ?", pn.User, s); err != nil {
+		if err := rewriteLIDAuthor(db, s, pn.User); err != nil {
 			return rewritten, err
 		}
 		rewritten++
 	}
 	return rewritten, nil
+}
+
+// rewriteLIDAuthor moves one author to the phone number; of two votes on one poll, the newer stays.
+func rewriteLIDAuthor(db *sql.DB, from, to string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{
+		`UPDATE messages SET sender = ?2 WHERE sender = ?1`,
+		`DELETE FROM poll_votes AS o WHERE voter = ?1 AND EXISTS (SELECT 1 FROM poll_votes n
+			WHERE n.poll_id = o.poll_id AND n.chat_jid = o.chat_jid AND n.voter = ?2
+			AND julianday(n.timestamp) >= julianday(o.timestamp))`,
+		`UPDATE OR REPLACE poll_votes SET voter = ?2 WHERE voter = ?1`,
+	} {
+		if _, err := tx.Exec(q, from, to); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func queryStrings(db *sql.DB, query string, args ...any) ([]string, error) {

@@ -49,10 +49,10 @@ func seedLIDPair(t *testing.T, s *MessageStore) {
 	if err := s.StoreChat(testLID, "", ts("2026-10-21T13:00:00+03:00")); err != nil {
 		t.Fatal(err)
 	}
-	// The same audio under both keys; only the LID copy got transcribed.
-	for _, c := range []struct{ chat, content string }{{testPN, ""}, {testLID, "transcribed"}} {
+	// The same audio under both keys, named differently; only the LID copy got transcribed.
+	for _, c := range []struct{ chat, content, filename string }{{testPN, "", "pn.ogg"}, {testLID, "transcribed", "a.ogg"}} {
 		mustExec(t, s, `INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_length)
-			VALUES ('m1', ?, '222', ?, ?, 0, 'audio', 'a.ogg', 'u', x'01', 42)`, c.chat, c.content, ts("2026-10-20T09:00:00Z"))
+			VALUES ('m1', ?, '222', ?, ?, 0, 'audio', ?, 'u', x'01', 42)`, c.chat, c.content, ts("2026-10-20T09:00:00Z"), c.filename)
 	}
 	if err := s.StoreMessage("m2", testLID, "222", "hello", ts("2026-10-21T10:00:00Z"), false, "", "", "", nil, nil, nil, 0); err != nil {
 		t.Fatal(err)
@@ -108,8 +108,8 @@ func TestLIDMergeKeepsTranscriptionAndMovesEverything(t *testing.T) {
 		t.Errorf("favorite = %q, %v; want the phone number's own decision", status, err)
 	}
 	assertChat(t, s, testPN, "Ana", ts("2026-10-21T10:00:00Z"))
-	if _, err := os.Stat(filepath.Join("store", testPN, "m1_a.ogg")); err != nil {
-		t.Errorf("cached audio not moved: %v", err)
+	if _, err := os.Stat(filepath.Join("store", testPN, "m1_pn.ogg")); err != nil {
+		t.Errorf("cached audio not moved under the merged row's filename: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join("store", testLID)); !os.IsNotExist(err) {
 		t.Errorf("LID media directory left behind: %v", err)
@@ -195,5 +195,109 @@ func assertChat(t *testing.T, s *MessageStore, jid, name string, last time.Time)
 	}
 	if gotName != name || !gotTime.Equal(last) {
 		t.Errorf("chat %s = %q %v, want %q %v", jid, gotName, gotTime, name, last)
+	}
+}
+
+func TestLIDMediaMovedOnNextStartAfterACrash(t *testing.T) {
+	s := setupChatStore(t)
+	seedLIDPair(t, s)
+	if err := mergeLIDChat(s.db, testLID, testPN); err != nil { // rows merged, then the process died
+		t.Fatal(err)
+	}
+
+	migrateLIDChats(lidClient(map[string]string{"999": "222"}), s, waLog.Noop)
+
+	if _, err := os.Stat(filepath.Join("store", testPN, "m1_pn.ogg")); err != nil {
+		t.Errorf("leftover LID media not moved: %v", err)
+	}
+}
+
+func pollVote(t *testing.T, s *MessageStore, chat, voter string) (string, time.Time) {
+	t.Helper()
+	var selected string
+	var at time.Time
+	if err := s.db.QueryRow(`SELECT selected, timestamp FROM poll_votes WHERE poll_id = 'p1' AND chat_jid = ? AND voter = ?`, chat, voter).Scan(&selected, &at); err != nil {
+		t.Fatalf("vote of %s in %s: %v", voter, chat, err)
+	}
+	return selected, at
+}
+
+func TestLIDMergeKeepsNewerPollVote(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pnAt, lidAt int64
+		want        string
+	}{
+		"LID copy newer": {pnAt: 100, lidAt: 200, want: `["lid"]`},
+		"PN copy newer":  {pnAt: 300, lidAt: 200, want: `["pn"]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := setupChatStore(t)
+			seedLIDPair(t, s)
+			mustExec(t, s, `DELETE FROM poll_votes`)
+			mustExec(t, s, `INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES
+				('p1', ?, '111', '["pn"]', ?), ('p1', ?, '111', '["lid"]', ?)`, testPN, time.Unix(tc.pnAt, 0), testLID, time.Unix(tc.lidAt, 0))
+
+			migrateLIDChats(lidClient(map[string]string{"999": "222"}), s, waLog.Noop)
+
+			if got, _ := pollVote(t, s, testPN, "111"); got != tc.want {
+				t.Errorf("vote = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLIDVotersRewrittenNewerVoteWins(t *testing.T) {
+	s := setupChatStore(t)
+	const group = "123-456@g.us"
+	mustExec(t, s, `INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES
+		('p1', ?, '222', '["old"]', ?), ('p1', ?, '999@lid', '["new"]', ?), ('p2', ?, '999', '["only"]', ?), ('p2', ?, '222', '["newer"]', ?)`,
+		group, time.Unix(100, 0), group, time.Unix(200, 0), group, time.Unix(100, 0), group, time.Unix(300, 0))
+
+	migrateLIDChats(lidClient(map[string]string{"999": "222"}), s, waLog.Noop)
+
+	if n := countRows(t, s, `SELECT COUNT(*) FROM poll_votes WHERE voter != '222'`); n != 0 {
+		t.Errorf("%d vote(s) still under a LID", n)
+	}
+	if got, _ := pollVote(t, s, group, "222"); got != `["new"]` {
+		t.Errorf("p1 vote = %s, want the newer LID vote", got)
+	}
+	var p2 string
+	if err := s.db.QueryRow(`SELECT selected FROM poll_votes WHERE poll_id = 'p2'`).Scan(&p2); err != nil || p2 != `["newer"]` {
+		t.Errorf("p2 vote = %s, %v; want the newer phone-number vote", p2, err)
+	}
+}
+
+func TestChatDeleteTargetAddressesLIDAuthor(t *testing.T) {
+	s := setupChatStore(t)
+	const group = "123-456@g.us"
+	if err := s.StoreChat(group, "Team", time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage("g1", group, "777@lid", "x", time.Unix(100, 0), false, "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	_, _, key, err := chatDeleteTarget(s.db, group, "Team")
+	if err != nil || key.GetParticipant() != "777@lid" {
+		t.Fatalf("participant = %q, %v; want 777@lid", key.GetParticipant(), err)
+	}
+}
+
+func TestApplyEditMatchesLegacyBareLIDAuthor(t *testing.T) {
+	s := setupChatStore(t)
+	const group = "123-456@g.us"
+	if err := s.StoreChat(group, "Team", time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StoreMessage("e1", group, "777", "before", time.Unix(100, 0), false, "", "", "", nil, nil, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ sender, want string }{{"778@lid", "before"}, {"777@lid", "after"}} {
+		if err := s.ApplyEdit("e1", group, "after", false, tc.sender); err != nil {
+			t.Fatal(err)
+		}
+		var got string
+		if err := s.db.QueryRow(`SELECT content FROM messages WHERE id = 'e1'`).Scan(&got); err != nil || got != tc.want {
+			t.Errorf("edit by %s: content = %q, %v; want %q", tc.sender, got, err, tc.want)
+		}
 	}
 }

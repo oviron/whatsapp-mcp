@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	sqlite3 "github.com/mattn/go-sqlite3"
 )
@@ -44,45 +45,48 @@ const messageFTSTriggers = `
 `
 
 func initMessageFTS(db *sql.DB) (bool, error) {
-	tx, err := db.Begin()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(messageFTSStateSchema); err != nil {
+	defer conn.Close()
+	// Lock before reading the schema: upgrading a read transaction can bypass busy_timeout.
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		return false, err
+	}
+	defer conn.ExecContext(ctx, `ROLLBACK`)
+	if _, err := conn.ExecContext(ctx, messageFTSStateSchema); err != nil {
 		return false, err
 	}
 	// Probe even when messages_fts already exists: an untagged binary may reopen this database.
-	_, err = tx.Exec(`CREATE VIRTUAL TABLE temp.message_fts_probe USING fts5(content)`)
+	_, err = conn.ExecContext(ctx, `CREATE VIRTUAL TABLE temp.message_fts_probe USING fts5(content)`)
 	if err != nil {
 		if !strings.Contains(err.Error(), "no such module: fts5") {
 			return false, err
 		}
-		if err := disableMessageFTS(tx); err != nil {
+		if _, err := conn.ExecContext(ctx, `DROP TRIGGER IF EXISTS messages_fts_insert;
+			DROP TRIGGER IF EXISTS messages_fts_update;
+			DROP TRIGGER IF EXISTS messages_fts_delete;
+			INSERT INTO message_fts_state VALUES (1, 0, -1)
+			ON CONFLICT(id) DO UPDATE SET last_rowid = 0, ready = -1;`); err != nil {
 			return false, err
 		}
-		return false, tx.Commit()
+		_, err = conn.ExecContext(ctx, `COMMIT`)
+		return false, err
 	}
-	if _, err := tx.Exec(`DROP TABLE temp.message_fts_probe;
+	if _, err := conn.ExecContext(ctx, `DROP TABLE temp.message_fts_probe;
 		CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 			content, content='messages', content_rowid='rowid', tokenize='unicode61 remove_diacritics 2'
 		);
 		INSERT OR IGNORE INTO message_fts_state VALUES (1, 0, -1);`); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(messageFTSTriggers); err != nil {
+	if _, err := conn.ExecContext(ctx, messageFTSTriggers); err != nil {
 		return false, err
 	}
-	return true, tx.Commit()
-}
-
-func disableMessageFTS(tx *sql.Tx) error {
-	_, err := tx.Exec(`DROP TRIGGER IF EXISTS messages_fts_insert;
-		DROP TRIGGER IF EXISTS messages_fts_update;
-		DROP TRIGGER IF EXISTS messages_fts_delete;
-		INSERT INTO message_fts_state VALUES (1, 0, -1)
-		ON CONFLICT(id) DO UPDATE SET last_rowid = 0, ready = -1;`)
-	return err
+	_, err = conn.ExecContext(ctx, `COMMIT`)
+	return true, err
 }
 
 func messageFTSReady(db *sql.DB) (bool, error) {
@@ -174,8 +178,10 @@ func (store *MessageStore) startMessageFTSBackfill() {
 // Every word is a literal prefix, so a stem still finds its inflections as LIKE did.
 func literalFTSQuery(query string) string {
 	var terms []string
-	for _, word := range strings.Fields(strings.ReplaceAll(query, "\x00", " ")) {
-		terms = append(terms, `"`+strings.ReplaceAll(word, `"`, `""`)+`"*`)
+	for _, word := range strings.FieldsFunc(query, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
+	}) {
+		terms = append(terms, `"`+word+`"*`)
 	}
 	return strings.Join(terms, " ")
 }

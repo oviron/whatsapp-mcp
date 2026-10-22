@@ -31,10 +31,11 @@ type fakeMessageActions struct {
 type fakeLIDs struct {
 	store.LIDStore
 	pairs map[types.JID]types.JID // number -> LID
+	err   error
 }
 
 func (f fakeLIDs) GetLIDForPN(_ context.Context, pn types.JID) (types.JID, error) {
-	return f.pairs[pn], nil
+	return f.pairs[pn], f.err
 }
 
 func (f fakeLIDs) GetPNForLID(_ context.Context, lid types.JID) (types.JID, error) {
@@ -47,7 +48,7 @@ func (f fakeLIDs) GetPNForLID(_ context.Context, lid types.JID) (types.JID, erro
 }
 
 func (f *fakeMessageActions) GroupAuthor(ctx context.Context, _ types.JID, author types.JID) (types.JID, error) {
-	return groupActionAuthor(ctx, &f.group, author, f.lids), nil
+	return groupActionAuthor(ctx, &f.group, author, f.lids)
 }
 
 func newFakeMessageActions() *fakeMessageActions {
@@ -117,6 +118,9 @@ func TestGroupMessageActions(t *testing.T) {
 				// The same message ID in another chat must not supply the author.
 				seedActionMessage(t, store, "target", "999@g.us", "444", "other chat", false)
 				client := newFakeMessageActions()
+				if strings.HasSuffix(c.sender, "@lid") {
+					client.group.AddressingMode = types.AddressingModeLID
+				}
 				emoji := "👍"
 				if c.name == "group PN removal" {
 					emoji = ""
@@ -197,6 +201,7 @@ func TestGroupMessageActionSendError(t *testing.T) {
 			store := setupChatStore(t)
 			seedActionMessage(t, store, "target", "123@g.us", "333@lid", "original", false)
 			client := newFakeMessageActions()
+			client.group.AddressingMode = types.AddressingModeLID
 			client.sendErr = errors.New("WhatsApp: forbidden (403), admin required")
 			rec := doHandlerRequest(t, groupActionHandler(action, client, store), http.MethodPost, []byte(`{"chat_jid":"123@g.us","message_id":"target","from_me":false}`))
 			var resp MarkChatResponse
@@ -232,10 +237,10 @@ func TestGroupActionAuthorFollowsAddressing(t *testing.T) {
 		{"number group member stored by LID", types.GroupInfo{AddressingMode: types.AddressingModePN,
 			Participants: []types.GroupParticipant{{JID: pn, LID: lid, PhoneNumber: pn}}}, lid, pn},
 		{"number group former member", types.GroupInfo{AddressingMode: types.AddressingModePN}, lid, pn},
-		{"unknown mapping keeps the stored author", types.GroupInfo{AddressingMode: types.AddressingModeLID}, types.NewJID("444", types.DefaultUserServer), types.NewJID("444", types.DefaultUserServer)},
+		{"LID group former member stored by LID", types.GroupInfo{AddressingMode: types.AddressingModeLID}, lid, lid},
 	} {
-		if got := groupActionAuthor(context.Background(), &c.group, c.author, lids); got != c.want {
-			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		if got, err := groupActionAuthor(context.Background(), &c.group, c.author, lids); err != nil || got != c.want {
+			t.Errorf("%s: %s (%v), want %s", c.name, got, err, c.want)
 		}
 	}
 
@@ -256,6 +261,36 @@ func TestGroupActionAuthorFollowsAddressing(t *testing.T) {
 		}
 		if key.GetParticipant() != "333@lid" {
 			t.Errorf("%s: participant %q, want 333@lid", action, key.GetParticipant())
+		}
+	}
+}
+
+// A former member of a LID group whose LID is unknown, or a failed lookup, refuses the action: the
+// key would carry the number, WhatsApp would drop it, and revoke would still blank the local text.
+func TestGroupActionUnmappedAuthorRefused(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		lids fakeLIDs
+		code int
+	}{
+		{"unknown LID", fakeLIDs{}, http.StatusBadRequest},
+		{"lookup error", fakeLIDs{err: errors.New("database is locked")}, http.StatusInternalServerError},
+	} {
+		for _, action := range []string{"react", "revoke"} {
+			s := setupChatStore(t)
+			seedActionMessage(t, s, "target", "123@g.us", "222", "original", false)
+			client := newFakeMessageActions()
+			client.group = types.GroupInfo{AddressingMode: types.AddressingModeLID}
+			client.lids = c.lids
+			body, _ := json.Marshal(ReactRequest{ChatJID: "123@g.us", MessageID: "target", Emoji: "👍"})
+			rec := doHandlerRequest(t, groupActionHandler(action, client, s), http.MethodPost, body)
+			if rec.Code != c.code || client.sent != 0 {
+				t.Errorf("%s/%s: status=%d sent=%d: %s", c.name, action, rec.Code, client.sent, rec.Body.String())
+			}
+			var content string
+			if err := s.db.QueryRow("SELECT content FROM messages WHERE id = ? AND chat_jid = ?", "target", "123@g.us").Scan(&content); err != nil || content != "original" {
+				t.Errorf("%s/%s: content %q (%v)", c.name, action, content, err)
+			}
 		}
 	}
 }

@@ -42,30 +42,37 @@ func (c whatsmeowActions) GroupAuthor(ctx context.Context, group, author types.J
 	if err != nil {
 		return types.EmptyJID, fmt.Errorf("failed to read the group's addressing: %w", err)
 	}
-	return groupActionAuthor(ctx, info, author, c.Store.LIDs), nil
+	return groupActionAuthor(ctx, info, author, c.Store.LIDs)
 }
 
 // groupActionAuthor names the author the way the group addresses its members. A LID group needs the
 // author's LID in the message key (messages.sender usually holds the number), or WhatsApp drops the
-// reaction or revoke silently (whatsmeow#1071).
-func groupActionAuthor(ctx context.Context, info *types.GroupInfo, author types.JID, lids store.LIDStore) types.JID {
+// reaction or revoke silently (whatsmeow#1071). An author it cannot map is refused before sending.
+func groupActionAuthor(ctx context.Context, info *types.GroupInfo, author types.JID, lids store.LIDStore) (types.JID, error) {
 	for _, p := range info.Participants {
 		if p.JID == author || p.LID == author || p.PhoneNumber == author {
-			return p.JID
+			return p.JID, nil
 		}
 	}
 	// A former member: map through the stored LID <-> number pairs.
+	lidGroup := info.AddressingMode == types.AddressingModeLID
+	if lidGroup == (author.Server == types.HiddenUserServer) {
+		return author, nil
+	}
 	var mapped types.JID
 	var err error
-	if info.AddressingMode == types.AddressingModeLID && author.Server == types.DefaultUserServer {
+	if lidGroup {
 		mapped, err = lids.GetLIDForPN(ctx, author)
-	} else if info.AddressingMode != types.AddressingModeLID && author.Server == types.HiddenUserServer {
+	} else {
 		mapped, err = lids.GetPNForLID(ctx, author)
 	}
-	if err != nil || mapped.IsEmpty() {
-		return author
+	if err != nil {
+		return types.EmptyJID, fmt.Errorf("failed to map the author to the group's addressing: %w", err)
 	}
-	return mapped
+	if mapped.IsEmpty() {
+		return types.EmptyJID, invalid("the author is no longer in the group and the bridge does not know their address in it, so WhatsApp would drop this action")
+	}
+	return mapped, nil
 }
 
 func groupMessageSender(store *MessageStore, chat types.JID, id string) (types.JID, error) {

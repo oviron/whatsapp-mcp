@@ -47,6 +47,9 @@ func apiGuard(token, bindAddr string, port int, readOnly bool, next http.Handler
 	allowedHosts := map[string]bool{}
 	for _, h := range []string{"127.0.0.1", "localhost", "::1", bindAddr} {
 		allowedHosts[net.JoinHostPort(h, strconv.Itoa(port))] = true
+		if port == 80 { // clients leave the default port out of Host
+			allowedHosts[strings.TrimSuffix(net.JoinHostPort(h, "80"), ":80")] = true
+		}
 	}
 	want := []byte("Bearer " + token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

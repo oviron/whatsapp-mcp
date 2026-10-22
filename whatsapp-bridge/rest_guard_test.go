@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -85,10 +86,37 @@ func TestAPIGuardReadOnlyRefusesWrites(t *testing.T) {
 	}
 }
 
+// Handlers decode JSON straight from the body, so an oversized one must fail to decode instead of being read whole.
 func TestAPIGuardCapsTheBody(t *testing.T) {
-	h := apiGuard("", "127.0.0.1", 8080, false, guardedMux())
-	if got := guardCode(h, "/api/send", "127.0.0.1:8080", "", "", strings.Repeat("x", maxAPIBody+1)); got != 413 {
-		t.Errorf("oversized body: got %d want 413", got)
+	var decoded bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+		var req SendMessageRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		decoded = true
+	})
+	h := apiGuard("", "127.0.0.1", 8080, false, mux)
+	body := `{"recipient":"111","message":"` + strings.Repeat("x", maxAPIBody) + `"}`
+	if got := guardCode(h, "/api/send", "127.0.0.1:8080", "", "", body); got != 400 || decoded {
+		t.Errorf("oversized body: got %d (decoded=%v), want 400 without decoding", got, decoded)
+	}
+	if got := guardCode(h, "/api/send", "127.0.0.1:8080", "", "", `{"recipient":"111","message":"hi"}`); got != 200 || !decoded {
+		t.Errorf("normal body: got %d (decoded=%v)", got, decoded)
+	}
+}
+
+func TestAPIGuardDefaultPortHostHasNoPort(t *testing.T) {
+	h := apiGuard("", "127.0.0.1", 80, false, guardedMux())
+	for _, host := range []string{"localhost", "127.0.0.1", "[::1]", "localhost:80"} {
+		if got := guardCode(h, "/api/messages", host, "", "", "{}"); got != 200 {
+			t.Errorf("host %s on port 80: got %d", host, got)
+		}
+	}
+	if got := guardCode(h, "/api/messages", "evil.example", "", "", "{}"); got != 403 {
+		t.Errorf("foreign host on port 80: got %d", got)
 	}
 }
 

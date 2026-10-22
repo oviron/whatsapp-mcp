@@ -179,7 +179,7 @@ func (store *MessageStore) startMessageFTSBackfill() {
 func literalFTSQuery(query string) string {
 	var terms []string
 	for _, word := range strings.FieldsFunc(query, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r)
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r) && !unicode.Is(unicode.Co, r)
 	}) {
 		terms = append(terms, `"`+word+`"*`)
 	}

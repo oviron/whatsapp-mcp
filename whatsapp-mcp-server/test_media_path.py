@@ -17,6 +17,11 @@ class MediaPathTests(unittest.TestCase):
         self.allowed.mkdir()
         self.home = self.base / "home"
         self.home.mkdir()
+        temp = self.base / "os-temp"
+        temp.mkdir()
+        temp_patch = patch("media_paths.tempfile.gettempdir", return_value=str(temp))
+        temp_patch.start()
+        self.addCleanup(temp_patch.stop)
         self.env = patch.dict(os.environ, {
             "HOME": str(self.home), "USERPROFILE": str(self.home),
             "WHATSAPP_MEDIA_DIRS": str(self.allowed),
@@ -96,7 +101,7 @@ class MediaPathTests(unittest.TestCase):
                 patch("media_paths.STORE_DIR", store), \
                 patch("media_paths.tempfile.gettempdir", return_value=str(temp)), \
                 patch("whatsapp.requests.post", return_value=response) as post:
-            for path in [self.home / "Documents" / "report.pdf", temp / "tts.ogg",
+            for path in [self.home / "Downloads" / "report.pdf", temp / "tts.ogg",
                          store / "chat" / "message.ogg"]:
                 self.assertTrue(whatsapp.send_file("123", self.file(path))[0])
             for path in [self.home / ".ssh" / "key", self.home / ".aws" / "credentials",

@@ -13,22 +13,37 @@ const maxMediaBytes = 100 * 1024 * 1024
 var errMediaPath = errors.New("Media file unavailable or outside allowed directories (WHATSAPP_MEDIA_DIRS)")
 
 func mediaRelative(root, path string) (string, bool) {
-	rel, err := filepath.Rel(root, path)
-	return rel, err == nil && filepath.IsLocal(rel)
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return "", false
+	}
+	// Filesystem identity handles case aliases without conflating distinct
+	// directories on case-sensitive volumes.
+	for rel := "."; ; rel, path = filepath.Join(filepath.Base(path), rel), filepath.Dir(path) {
+		if info, err := os.Stat(path); err == nil && os.SameFile(rootInfo, info) {
+			return rel, true
+		}
+		if filepath.Dir(path) == path {
+			return "", false
+		}
+	}
 }
 
-func mediaPathBlocked(path, home, store string) bool {
+func mediaPathBlocked(path, home, store, temp string) bool {
 	storeRel, inStore := mediaRelative(store, path)
 	if inStore && !strings.ContainsRune(storeRel, filepath.Separator) {
 		return true
 	}
+	_, inTemp := mediaRelative(temp, path)
 	if rel, ok := mediaRelative(home, path); ok && rel != "." {
 		top, _, _ := strings.Cut(rel, string(filepath.Separator))
 		// Dotfiles hold credentials; Library (macOS) and AppData (Windows) hold keychains,
 		// browser cookies and other apps' message databases without a leading dot.
-		if strings.HasPrefix(top, ".") || top == "Library" || top == "AppData" {
-			// Downloads live below store/<chat>/ even when the install is in ~/.local.
-			return !inStore
+		_, inLibrary := mediaRelative(filepath.Join(home, "Library"), path)
+		_, inAppData := mediaRelative(filepath.Join(home, "AppData"), path)
+		if strings.HasPrefix(top, ".") || inLibrary || inAppData {
+			// Downloads and OS temp may live under otherwise excluded directories.
+			return !inStore && !inTemp
 		}
 	}
 	return false
@@ -95,7 +110,11 @@ func readMediaFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, errMediaPath
 	}
-	if mediaPathBlocked(abs, home, store) {
+	temp, err := filepath.Abs(os.TempDir())
+	if err != nil {
+		return nil, errMediaPath
+	}
+	if mediaPathBlocked(abs, home, store, temp) {
 		return nil, errMediaPath
 	}
 	resolved, err := filepath.EvalSymlinks(abs)
@@ -105,10 +124,13 @@ func readMediaFile(path string) ([]byte, error) {
 	if canonical, err := filepath.EvalSymlinks(store); err == nil {
 		store = canonical
 	}
-	if mediaPathBlocked(resolved, home, store) {
+	if canonical, err := filepath.EvalSymlinks(temp); err == nil {
+		temp = canonical
+	}
+	if mediaPathBlocked(resolved, home, store, temp) {
 		return nil, errMediaPath
 	}
-	roots := []string{home, os.TempDir(), store}
+	roots := []string{filepath.Join(home, "Downloads"), temp, store}
 	if configured := os.Getenv("WHATSAPP_MEDIA_DIRS"); configured != "" {
 		roots = filepath.SplitList(configured)
 	}

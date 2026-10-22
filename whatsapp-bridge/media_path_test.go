@@ -55,7 +55,7 @@ func expectMediaDenied(t *testing.T, path string) {
 func TestMediaPathDefaultRoots(t *testing.T) {
 	home, temp, store, outside := mediaFixture(t)
 	for _, path := range []string{
-		filepath.Join(home, "Documents", "report.pdf"),
+		filepath.Join(home, "Downloads", "report.pdf"),
 		filepath.Join(temp, "tts.ogg"),
 		filepath.Join(store, "chat", "message.ogg"),
 	} {
@@ -111,19 +111,19 @@ func TestMediaPathSymlinks(t *testing.T) {
 		t.Skip("creating symlinks requires Developer Mode or administrator rights")
 	}
 	home, _, store, outside := mediaFixture(t)
-	allowed := mediaFile(t, filepath.Join(home, "Documents", "file.pdf"))
+	allowed := mediaFile(t, filepath.Join(home, "Downloads", "file.pdf"))
 	for name, target := range map[string]string{
 		"outside":  mediaFile(t, filepath.Join(outside, "secret")),
 		"hidden":   mediaFile(t, filepath.Join(home, ".ssh", "key")),
 		"database": mediaFile(t, filepath.Join(store, "whatsapp.db")),
 	} {
-		alias := filepath.Join(home, "Documents", name)
+		alias := filepath.Join(home, "Downloads", name)
 		if err := os.Symlink(target, alias); err != nil {
 			t.Fatal(err)
 		}
 		expectMediaDenied(t, alias)
 	}
-	alias := filepath.Join(home, "Documents", "alias.pdf")
+	alias := filepath.Join(home, "Downloads", "alias.pdf")
 	if err := os.Symlink(allowed, alias); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestMediaPathRegularFileAndLimit(t *testing.T) {
 	home, _, _, _ := mediaFixture(t)
 	expectMediaDenied(t, home)
 	expectMediaDenied(t, filepath.Join(home, "missing"))
-	large := filepath.Join(home, "large.pdf")
+	large := mediaFile(t, filepath.Join(home, "Downloads", "large.pdf"))
 	f, err := os.Create(large)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestMediaPathRegularFileAndLimit(t *testing.T) {
 	f.Close()
 	expectMediaDenied(t, large)
 	if runtime.GOOS != "windows" {
-		fifo := filepath.Join(home, "fifo")
+		fifo := filepath.Join(home, "Downloads", "fifo")
 		if err := exec.Command("mkfifo", fifo).Run(); err != nil {
 			t.Fatal(err)
 		}
@@ -169,7 +169,7 @@ func TestMediaPathRegularFileAndLimit(t *testing.T) {
 
 func TestMediaPathLimitInclusive(t *testing.T) {
 	home, _, _, _ := mediaFixture(t)
-	path := filepath.Join(home, "at-limit.pdf")
+	path := mediaFile(t, filepath.Join(home, "Downloads", "at-limit.pdf"))
 	file, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestMediaPathReplacementAfterResolution(t *testing.T) {
 	}
 	home, _, _, outside := mediaFixture(t)
 	secret := mediaFile(t, filepath.Join(outside, "secret"))
-	resolved := mediaFile(t, filepath.Join(home, "Documents", "file"))
+	resolved := mediaFile(t, filepath.Join(home, "Downloads", "file"))
 	if err := os.Remove(resolved); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestMediaPathReplacementAfterResolution(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Dir(resolved)); err != nil {
 		t.Fatal(err)
 	}
-	if file, err := openResolvedMedia(filepath.Join(home, "Documents", "secret")); err == nil {
+	if file, err := openResolvedMedia(filepath.Join(home, "Downloads", "secret")); err == nil {
 		file.Close()
 		t.Fatal("opened a directory replaced with a symlink after resolution")
 	}

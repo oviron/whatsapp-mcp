@@ -14,31 +14,46 @@ class MediaPathError(ValueError):
 
 def _relative(root, path):
     try:
-        return path.relative_to(root).parts
-    except ValueError:
+        root_info = root.stat()
+    except OSError:
         return None
+    # Filesystem identity respects case aliases and case-sensitive volumes alike.
+    parts = ()
+    while True:
+        try:
+            if os.path.samestat(root_info, path.stat()):
+                return parts
+        except OSError:
+            pass
+        if path.parent == path:
+            return None
+        parts = (path.name, *parts)
+        path = path.parent
 
 
-def _blocked(path, home, store):
+def _blocked(path, home, store, temp):
     in_store = _relative(store, path)
     if in_store is not None and len(in_store) < 2:
         return True
     in_home = _relative(home, path)
     # Dotfiles hold credentials; Library (macOS) and AppData (Windows) hold
     # keychains, browser cookies and other apps' message databases.
-    return bool(in_home and (in_home[0].startswith(".") or in_home[0] in ("Library", "AppData"))
-                and in_store is None)
+    return bool(in_home and (in_home[0].startswith(".")
+                            or _relative(home / "Library", path) is not None
+                            or _relative(home / "AppData", path) is not None)
+                and in_store is None and _relative(temp, path) is None)
 
 
 def _checked_path(path):
     original = Path(os.path.abspath(path))
     home = Path.home().resolve(strict=True)
     store = STORE_DIR.resolve()
+    temp = Path(tempfile.gettempdir())
     resolved = original.resolve(strict=True)
-    if _blocked(original, home, STORE_DIR) or _blocked(resolved, home, store):
+    if _blocked(original, home, STORE_DIR, temp) or _blocked(resolved, home, store, temp.resolve()):
         raise MediaPathError("Media path is not allowed (WHATSAPP_MEDIA_DIRS)")
     configured = os.environ.get("WHATSAPP_MEDIA_DIRS", "")
-    roots = configured.split(os.pathsep) if configured else [home, tempfile.gettempdir(), store]
+    roots = configured.split(os.pathsep) if configured else [home / "Downloads", temp, store]
     if not any(_relative(Path(root).resolve(), resolved) for root in roots if root):
         raise MediaPathError("Media path is not allowed (WHATSAPP_MEDIA_DIRS)")
     return resolved

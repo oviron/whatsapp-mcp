@@ -4508,8 +4508,7 @@ type mediaRetryEntry struct {
 	storedAt      time.Time
 }
 
-// retryCache maps message ID -> pending retry entry, and (chat, message ID) -> when the phone was
-// last asked. All access goes through its methods; consume() evicts on read and store() drops
+// retryCache maps (chat, message ID) -> pending retry entry and -> when the phone was last asked. All access goes through its methods; consume() evicts on read and store() drops
 // unanswered entries, so key material does not pile up even without the transcription sweep.
 type retryCache struct {
 	mu        sync.Mutex // guards m and requested
@@ -4541,25 +4540,37 @@ func (c *retryCache) store(id string, e mediaRetryEntry) bool {
 		c.requested = make(map[string]time.Time)
 	}
 	c.requested[key] = e.storedAt
-	c.m[id] = e
+	c.m[key] = e
 	return true
 }
 
-// consume returns the entry for id and removes it, so a retry response is handled at most once.
-// The response is matched by message ID alone: the phone may name the chat by its LID.
-func (c *retryCache) consume(id string) (mediaRetryEntry, bool) {
+// consume removes and returns the entry a retry response belongs to, so it is handled at most once.
+// The phone may name the chat by its LID and two chats can share a message ID, so the entry is the
+// one whose key decrypts the response: the same chat first, then any chat with this ID.
+func (c *retryCache) consume(chatJID, id string, decrypts func(mediaRetryEntry) bool) (mediaRetryEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.m[id]
-	delete(c.m, id)
-	return e, ok
+	keys := []string{mediaMessageKey(chatJID, id)}
+	for key := range c.m {
+		if key != keys[0] && strings.HasSuffix(key, "\x00"+id) {
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range keys {
+		if e, ok := c.m[key]; ok && decrypts(e) {
+			delete(c.m, key)
+			return e, true
+		}
+	}
+	return mediaRetryEntry{}, false
 }
 
 func (c *retryCache) forget(chatJID, id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.m, id)
-	delete(c.requested, mediaMessageKey(chatJID, id))
+	key := mediaMessageKey(chatJID, id)
+	delete(c.m, key)
+	delete(c.requested, key)
 }
 
 var mediaRetryCache = &retryCache{m: make(map[string]mediaRetryEntry)}
@@ -4649,15 +4660,18 @@ func requestMediaRetry(client mediaRetryClient, messageStore *MessageStore, mess
 func handleMediaRetry(client mediaDownloadClient, messageStore *MessageStore, evt *events.MediaRetry, logger waLog.Logger) {
 	// consume() evicts the entry so a duplicate response can't re-run the
 	// download and the key material is freed on every path below.
-	entry, ok := mediaRetryCache.consume(evt.MessageID)
+	var retryData *waMmsRetry.MediaRetryNotification
+	var decryptErr error
+	entry, ok := mediaRetryCache.consume(evt.ChatID.String(), evt.MessageID, func(e mediaRetryEntry) bool {
+		retryData, decryptErr = whatsmeow.DecryptMediaRetryNotification(evt, e.mediaKey)
+		return decryptErr == nil
+	})
 	if !ok {
-		logger.Warnf("media retry response for unknown message %s", evt.MessageID)
-		return
-	}
-
-	retryData, err := whatsmeow.DecryptMediaRetryNotification(evt, entry.mediaKey)
-	if err != nil {
-		fmt.Printf("MEDIA RETRY %s: ERROR decrypt failed: %v\n", evt.MessageID, err)
+		if decryptErr != nil {
+			fmt.Printf("MEDIA RETRY %s: ERROR decrypt failed: %v\n", evt.MessageID, decryptErr)
+		} else {
+			logger.Warnf("media retry response for unknown message %s", evt.MessageID)
+		}
 		return
 	}
 	if retryData.GetResult() != waMmsRetry.MediaRetryNotification_SUCCESS {

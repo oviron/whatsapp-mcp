@@ -245,10 +245,10 @@ func TestMediaRetryCooldownAfterResponseAndExpiry(t *testing.T) {
 	if !c.store("id", entry) {
 		t.Fatal("first request suppressed")
 	}
-	if _, ok := c.consume("id"); !ok {
+	if _, ok := c.consume("chat", "id", anyEntry); !ok {
 		t.Fatal("response entry missing")
 	}
-	if _, ok := c.consume("id"); ok {
+	if _, ok := c.consume("chat", "id", anyEntry); ok {
 		t.Fatal("response handled twice")
 	}
 	entry.storedAt = now.Add(time.Hour - time.Nanosecond)
@@ -270,7 +270,7 @@ func TestMediaRetryPendingExpiresBeforeCooldown(t *testing.T) {
 	now := time.Now()
 	c.store("id", mediaRetryEntry{chatJID: "chat", storedAt: now})
 	c.store("new", mediaRetryEntry{chatJID: "other", storedAt: now.Add(30 * time.Minute)})
-	if _, ok := c.consume("id"); ok {
+	if _, ok := c.consume("chat", "id", anyEntry); ok {
 		t.Fatal("pending crypto retained after expiry")
 	}
 	if c.store("id", mediaRetryEntry{chatJID: "chat", storedAt: now.Add(30 * time.Minute)}) {
@@ -371,5 +371,28 @@ func TestMediaRetryWritesAtomically(t *testing.T) {
 				t.Fatalf("temporary files left: %v", files)
 			}
 		})
+	}
+}
+
+func anyEntry(mediaRetryEntry) bool { return true }
+
+func TestMediaRetrySameIDInTwoChats(t *testing.T) {
+	c := &retryCache{m: make(map[string]mediaRetryEntry)}
+	now := time.Now()
+	c.store("id", mediaRetryEntry{chatJID: "a@s.whatsapp.net", storedAt: now, mediaKey: []byte("ka")})
+	c.store("id", mediaRetryEntry{chatJID: "b@s.whatsapp.net", storedAt: now, mediaKey: []byte("kb")})
+	keyIs := func(k string) func(mediaRetryEntry) bool {
+		return func(e mediaRetryEntry) bool { return string(e.mediaKey) == k }
+	}
+	// The phone names the chat by its LID: the entry whose key decrypts the response wins.
+	if e, ok := c.consume("999@lid", "id", keyIs("kb")); !ok || e.chatJID != "b@s.whatsapp.net" {
+		t.Fatalf("LID-named response took %+v, %v", e, ok)
+	}
+	if _, ok := c.consume("999@lid", "id", keyIs("kb")); ok {
+		t.Fatal("response handled twice")
+	}
+	c.forget("b@s.whatsapp.net", "id")
+	if e, ok := c.consume("a@s.whatsapp.net", "id", keyIs("ka")); !ok || e.chatJID != "a@s.whatsapp.net" {
+		t.Fatalf("a failed request in one chat dropped the other: %+v, %v", e, ok)
 	}
 }

@@ -752,7 +752,9 @@ def request_chat_history(chat_jid: str, count: int = 50) -> Tuple[bool, str]:
         try:
             result = response.json()
         except ValueError:
-            return False, f"Bridge returned invalid JSON (HTTP {response.status_code})"
+            if response.status_code != 200:
+                return False, f"Bridge request failed (HTTP {response.status_code}): {response.text.strip()[:200]}"
+            return False, "Bridge returned invalid JSON (HTTP 200)"
         if not isinstance(result, dict):
             return False, f"Bridge returned an unexpected response (HTTP {response.status_code})"
         if response.status_code != 200:

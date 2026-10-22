@@ -38,11 +38,13 @@ class ChatBackfillTest(unittest.TestCase):
                 ok, message = whatsapp.request_chat_history("111@s.whatsapp.net")
                 self.assertFalse(ok)
                 self.assertIn(expected, message)
-        response = Mock(status_code=502)
-        response.json.side_effect = requests.exceptions.JSONDecodeError("bad", "", 0)
-        with patch("whatsapp._api_request", return_value=response):
-            self.assertEqual(whatsapp.request_chat_history("111@s.whatsapp.net"),
-                             (False, "Bridge returned invalid JSON (HTTP 502)"))
+        for status, text, expected in [
+                (403, "Forbidden: API is read-only\n", "Bridge request failed (HTTP 403): Forbidden: API is read-only"),
+                (200, "<html>", "Bridge returned invalid JSON (HTTP 200)")]:
+            response = Mock(status_code=status, text=text)
+            response.json.side_effect = requests.exceptions.JSONDecodeError("bad", "", 0)
+            with self.subTest(status=status), patch("whatsapp._api_request", return_value=response):
+                self.assertEqual(whatsapp.request_chat_history("111@s.whatsapp.net"), (False, expected))
         with patch("whatsapp._api_request", side_effect=requests.ConnectionError("refused")):
             self.assertEqual(whatsapp.request_chat_history("111@s.whatsapp.net"),
                              (False, "Request error: refused"))

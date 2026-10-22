@@ -7,8 +7,6 @@ import (
 	"runtime"
 )
 
-const pairingQRPath = "store/whatsapp-qr.png"
-
 func restrictPermissions(path string, mode fs.FileMode) error {
 	if runtime.GOOS == "windows" {
 		return nil
@@ -31,10 +29,10 @@ func privateDirectory(path string) error {
 }
 
 func prepareStore() error {
-	if err := privateDirectory("store"); err != nil {
+	if err := privateDirectory(storePath()); err != nil {
 		return err
 	}
-	return filepath.WalkDir("store", func(path string, entry fs.DirEntry, err error) error {
+	return filepath.WalkDir(storePath(), func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -82,6 +80,7 @@ func updatePairingQR(png []byte) error {
 	qrState.png = png
 	qrState.connected = png == nil
 	qrState.Unlock()
+	pairingQRPath := storePath("whatsapp-qr.png")
 	if png != nil {
 		return privateFile(pairingQRPath, png)
 	}

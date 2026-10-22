@@ -9,6 +9,7 @@ umask 077
 REPO_URL="https://github.com/rodrigopg/whatsapp-mcp.git"
 INSTALL_DIR="${WHATSAPP_MCP_DIR:-$HOME/.whatsapp-mcp}"
 BRIDGE_PORT="${WHATSAPP_BRIDGE_PORT:-8080}"
+STORE_DIR="${WHATSAPP_STORE_DIR:-}"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -98,6 +99,28 @@ touch "$INSTALL_DIR/bridge.log"
 chmod 600 "$INSTALL_DIR/bridge.log"
 success "Repository ready"
 
+# ── store migration notice ──────────────────────────────────────────────────
+STORE_MIGRATION_PENDING=0
+if [[ -n "${STORE_DIR:-}" ]]; then
+  STORE_TARGET="$STORE_DIR"
+  [[ "$STORE_TARGET" = /* ]] || STORE_TARGET="$INSTALL_DIR/whatsapp-bridge/$STORE_TARGET"
+  OLD_STORE="$INSTALL_DIR/whatsapp-bridge/store"
+  if [[ -d "$OLD_STORE" && ! "$OLD_STORE" -ef "$STORE_TARGET" ]] &&
+     { [[ ! -e "$STORE_TARGET" ]] || [[ -d "$STORE_TARGET" && -z "$(ls -A "$STORE_TARGET")" ]]; }; then
+    STORE_MIGRATION_PENDING=1
+    warn "Existing store found. Stop the bridge and back up the entire store before moving it. No data was moved."
+    echo "  Stop launchd: launchctl bootout gui/\$(id -u)/com.whatsapp-mcp.bridge"
+    echo "  Stop systemd: systemctl --user stop whatsapp-bridge"
+    echo "  For a manual bridge, stop its process first. Then:"
+    printf '  mkdir -p -- %q\n' "$(dirname "$STORE_TARGET")"
+    if [[ -d "$STORE_TARGET" ]]; then
+      printf '  rmdir -- %q\n' "$STORE_TARGET"
+    fi
+    printf '  mv -- %q %q\n' "$OLD_STORE" "$STORE_TARGET"
+    echo "  Start the bridge again with the generated start-bridge.sh or its service."
+  fi
+fi
+
 # ── build Go bridge ──────────────────────────────────────────────────────────
 info "Building Go bridge…"
 cd "$INSTALL_DIR/whatsapp-bridge"
@@ -116,6 +139,7 @@ info "Detecting Claude Desktop config location…"
 
 UV_PATH="$(command -v uv)"
 MCP_SERVER_PATH="$INSTALL_DIR/whatsapp-mcp-server"
+STORE_DIR_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' "$STORE_DIR")
 
 if [[ "$PLATFORM" == "macos" ]]; then
   CLAUDE_CONFIG_DIR="$HOME/Library/Application Support/Claude"
@@ -137,7 +161,8 @@ MCP_JSON=$(cat <<EOF
         "main.py"
       ],
       "env": {
-        "WHATSAPP_BRIDGE_PORT": "$BRIDGE_PORT"
+        "WHATSAPP_BRIDGE_PORT": "$BRIDGE_PORT",
+        "WHATSAPP_STORE_DIR": $STORE_DIR_JSON
       }
     }
   }
@@ -180,6 +205,7 @@ fi
 
 # ── create launch script ─────────────────────────────────────────────────────
 LAUNCH_SCRIPT="$INSTALL_DIR/start-bridge.sh"
+printf -v STORE_DIR_QUOTED '%q' "${STORE_DIR:-}"
 cat > "$LAUNCH_SCRIPT" <<LAUNCH
 #!/usr/bin/env bash
 set -e
@@ -192,7 +218,7 @@ cd "$INSTALL_DIR/whatsapp-bridge"
 # or TRANSCRIPTION_API_KEY). Sourcing it here means both this launcher AND the
 # launchd auto-start inherit them — launchd does NOT see your shell's exports.
 [ -f "$INSTALL_DIR/transcription.env" ] && . "$INSTALL_DIR/transcription.env"
-WHATSAPP_BRIDGE_PORT=$BRIDGE_PORT exec ./whatsapp-bridge
+WHATSAPP_STORE_DIR=$STORE_DIR_QUOTED WHATSAPP_BRIDGE_PORT=$BRIDGE_PORT exec ./whatsapp-bridge
 LAUNCH
 chmod +x "$LAUNCH_SCRIPT"
 success "Launch script: $LAUNCH_SCRIPT"
@@ -205,6 +231,10 @@ bridge_already_running() {
 }
 
 install_service_linux() {
+  if [[ "$STORE_MIGRATION_PENDING" -eq 1 ]]; then
+    warn "Move the existing store first, then rerun install.sh --service to start systemd."
+    return 0
+  fi
   if bridge_already_running; then
     warn "bridge already running (existing install?) — skipping service setup"
     return 0
@@ -244,6 +274,10 @@ WantedBy=default.target
 }
 
 install_service_macos() {
+  if [[ "$STORE_MIGRATION_PENDING" -eq 1 ]]; then
+    warn "Move the existing store first, then rerun install.sh --service to start launchd."
+    return 0
+  fi
   if bridge_already_running; then
     warn "bridge already running (existing install?) — skipping service setup"
     return 0
@@ -314,7 +348,7 @@ if [[ $WITH_CODEX -eq 1 ]]; then
   CODEX_SNIPPET="[mcp_servers.whatsapp]
 command = \"$UV_PATH\"
 args = [\"--directory\", \"$INSTALL_DIR/whatsapp-mcp-server\", \"run\", \"main.py\"]
-env = { WHATSAPP_BRIDGE_PORT = \"$BRIDGE_PORT\" }"
+env = { WHATSAPP_BRIDGE_PORT = \"$BRIDGE_PORT\", WHATSAPP_STORE_DIR = $STORE_DIR_JSON }"
   CODEX_CONFIG="$HOME/.codex/config.toml"
   if [[ ! -d "$HOME/.codex" ]]; then
     warn "Codex CLI not found (~/.codex missing) — add this to its config.toml manually:"
@@ -357,6 +391,10 @@ echo -e "${GREEN}═════════════════════
 echo ""
 echo "  Next steps:"
 echo ""
+if [[ "$STORE_MIGRATION_PENDING" -eq 1 ]]; then
+  echo "  Complete the store backup and move printed above before starting the bridge."
+  echo ""
+fi
 echo "  1. Start the bridge:"
 echo -e "     ${CYAN}$LAUNCH_SCRIPT${NC}"
 echo ""

@@ -77,10 +77,10 @@ func NewMessageStore() (*MessageStore, error) {
 	}
 
 	// Open SQLite database for messages
-	if err := prepareDatabase("store/messages.db"); err != nil {
+	if err := prepareDatabase(storePath("messages.db")); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on&_txlock=immediate")
+	db, err := sql.Open("sqlite3", storeDSN("messages.db", "_foreign_keys=on&_txlock=immediate"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -2013,7 +2013,7 @@ func downloadMedia(client mediaDownloadClient, messageStore *MessageStore, messa
 	var err error
 
 	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir := storePath(strings.ReplaceAll(chatJID, ":", "_"))
 	localPath := ""
 
 	// Get media info from the database
@@ -2213,7 +2213,7 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 // messageStore.db (which uses the plain "sqlite3" driver) to avoid touching
 // the existing write path.
 func openUnaccentMessagesDB() (*sql.DB, error) {
-	return sql.Open("sqlite3_unaccent", "file:store/messages.db?_foreign_keys=on&_txlock=immediate")
+	return sql.Open("sqlite3_unaccent", storeDSN("messages.db", "_foreign_keys=on&_txlock=immediate"))
 }
 
 // openStoreDBReadOnly opens a read-only connection to whatsmeow's own
@@ -2222,7 +2222,7 @@ func openUnaccentMessagesDB() (*sql.DB, error) {
 // their own handle here. mode=ro avoids interfering with whatsmeow's writes;
 // _busy_timeout tolerates brief lock contention instead of failing immediately.
 func openStoreDBReadOnly() (*sql.DB, error) {
-	return sql.Open("sqlite3", "file:store/whatsapp.db?mode=ro&_busy_timeout=5000")
+	return sql.Open("sqlite3", storeDSN("whatsapp.db", "mode=ro&_busy_timeout=5000"))
 }
 
 // resolvePhoneToJIDs mirrors _resolve_phone_to_jids: returns every JID form
@@ -4023,12 +4023,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := prepareDatabase("store/whatsapp.db"); err != nil {
+	if err := prepareDatabase(storePath("whatsapp.db")); err != nil {
 		logger.Errorf("Failed to prepare session database: %v", err)
 		os.Exit(1)
 	}
 
-	container, err := sqlstore.New(context.Background(), "sqlite3", "file:store/whatsapp.db?_foreign_keys=on", dbLog)
+	container, err := sqlstore.New(context.Background(), "sqlite3", storeDSN("whatsapp.db", "_foreign_keys=on"), dbLog)
 	if err != nil {
 		logger.Errorf("Failed to connect to database: %v", err)
 		os.Exit(1)
@@ -4188,6 +4188,7 @@ func main() {
 					if err := updatePairingQR(pngBytes); err != nil {
 						logger.Warnf("Failed to save pairing QR: %v", err)
 					} else {
+						pairingQRPath := storePath("whatsapp-qr.png")
 						fmt.Printf("QR saved as image: %s\n", pairingQRPath)
 						if runtime.GOOS == "darwin" {
 							_ = exec.Command("open", pairingQRPath).Start()
@@ -4836,7 +4837,7 @@ func handleMediaRetry(client mediaDownloadClient, messageStore *MessageStore, ev
 	unlock := lockMediaMessage(entry.chatJID, evt.MessageID)
 	defer unlock()
 
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(entry.chatJID, ":", "_"))
+	chatDir := storePath(strings.ReplaceAll(entry.chatJID, ":", "_"))
 	if err := privateDirectory(chatDir); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR mkdir failed: %v\n", evt.MessageID, err)
 		return

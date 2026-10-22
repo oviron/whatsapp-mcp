@@ -71,6 +71,20 @@ It connects to your **personal WhatsApp account** directly via the WhatsApp web 
 
 The bridge creates `store/` and its subdirectories with mode `0700`, and databases, SQLite sidecars and media files with mode `0600`. Startup restricts wider permissions on existing stores. Unix modes do not apply on Windows. The installer and generated services use umask `077`.
 
+Set `WHATSAPP_STORE_DIR` to keep the session, message database, downloaded media and pairing QR outside the checkout. An unset or empty value keeps the existing `whatsapp-bridge/store/` layout. The bridge resolves relative paths from its working directory; Python scripts resolve them from the clone's `whatsapp-bridge/`, matching `start-bridge.sh`. `~` is literal, so use an absolute path or `$HOME`, e.g. `export WHATSAPP_STORE_DIR="$HOME/.local/share/whatsapp-mcp-store"`. Set the same value for the bridge, MCP server and manual transcription/recovery scripts. `clone_voice.py` uses it by default; `--store` overrides it. The media send restrictions above apply to the configured store too.
+
+To move an existing store, stop the bridge first and **back up the entire store directory**, including `messages.db`, `whatsapp.db`, their SQLite sidecars and media. Move the whole directory to the new path, then start the bridge with `WHATSAPP_STORE_DIR` set. Do not run two bridges against the same store. For example, from the installation directory, after stopping the bridge and taking a backup:
+
+```bash
+export WHATSAPP_STORE_DIR="$HOME/.local/share/whatsapp-mcp-store"
+mkdir -p "$(dirname "$WHATSAPP_STORE_DIR")"
+# The destination must not already exist.
+mv whatsapp-bridge/store "$WHATSAPP_STORE_DIR"
+WHATSAPP_STORE_DIR="$WHATSAPP_STORE_DIR" ./install.sh --service
+```
+
+`install.sh` saves the value in `start-bridge.sh`, used by both launchd and systemd, and in generated MCP client settings. If the destination is empty or absent and the old store exists, it prints stop/move/start instructions and skips service startup. It never moves a session automatically. Docker Compose keeps its store at `/app/whatsapp-bridge/store`, backed by `./data`; host `WHATSAPP_STORE_DIR` values do not change that mount.
+
 ### Contact name resolution (LID migration)
 WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.net`) to internal LID JIDs (`xxx@lid`) for privacy. This broke contact search, `get_direct_chat_by_contact`, and `list_messages` in the upstream. Fixed with:
 - `resolvePhoneToJIDs` (Go bridge) — looks up all JID variants (PN + LID) for a phone number via `whatsapp.db`, exposed to the MCP server through `POST /api/chat/by_contact`

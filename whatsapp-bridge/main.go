@@ -120,7 +120,7 @@ func NewMessageStore() (*MessageStore, error) {
 		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
-	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema)
+	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -567,7 +567,8 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// Persist text outbounds so own-sends appear in the local store.
 	// Multi-device echo via handleMessage doesn't fire on single-device accounts.
 	if messageStore != nil && mediaPath == "" && client.Store != nil && client.Store.ID != nil {
-		chatJID := recipientJID.String()
+		// Same key as the incoming path, or a LID recipient splits the chat in two.
+		chatJID := resolveToPN(client, recipientJID).String()
 		sender := client.Store.ID.User
 		if ensureErr := messageStore.EnsureChat(chatJID, resp.Timestamp); ensureErr != nil {
 			fmt.Printf("Failed to ensure chat row: %v\n", ensureErr)
@@ -727,87 +728,6 @@ func searchContactsBridge(client *whatsmeow.Client, store *MessageStore, query s
 	return hits
 }
 
-// migrateLIDChats merges any chat stored under a LID JID into its PN JID.
-// Idempotent: chats with no known mapping are left for the next startup.
-func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog.Logger) {
-	if client == nil || store == nil || store.db == nil {
-		return
-	}
-	rows, err := store.db.Query("SELECT jid, name, last_message_time FROM chats WHERE jid LIKE '%@" + types.HiddenUserServer + "'")
-	if err != nil {
-		logger.Warnf("LID migration: failed to list LID chats: %v", err)
-		return
-	}
-	type lidChat struct {
-		jid             string
-		name            string
-		lastMessageTime time.Time
-	}
-	var lidChats []lidChat
-	for rows.Next() {
-		var c lidChat
-		if err := rows.Scan(&c.jid, &c.name, &c.lastMessageTime); err == nil {
-			lidChats = append(lidChats, c)
-		}
-	}
-	rows.Close()
-	if len(lidChats) == 0 {
-		return
-	}
-	logger.Infof("LID migration: found %d chat(s) under @lid, attempting to merge", len(lidChats))
-	tx, err := store.db.Begin()
-	if err != nil {
-		logger.Warnf("LID migration: cannot start tx: %v", err)
-		return
-	}
-	merged, skipped := 0, 0
-	for _, c := range lidChats {
-		lidJID, err := types.ParseJID(c.jid)
-		if err != nil {
-			skipped++
-			continue
-		}
-		pnJID := resolveToPN(client, lidJID)
-		if pnJID.Server != types.DefaultUserServer {
-			skipped++
-			continue
-		}
-		pnStr := pnJID.String()
-		if _, err := tx.Exec(
-			"INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?) "+
-				"ON CONFLICT(jid) DO UPDATE SET "+
-				"  name = COALESCE(NULLIF(chats.name, ''), excluded.name), "+
-				`  last_message_time = CASE WHEN julianday(chats.last_message_time) IS NULL
-				 OR julianday(excluded.last_message_time) >= julianday(chats.last_message_time)
-				 THEN excluded.last_message_time ELSE chats.last_message_time END`,
-			pnStr, c.name, c.lastMessageTime,
-		); err != nil {
-			skipped++
-			continue
-		}
-		if _, err := tx.Exec("UPDATE OR IGNORE messages SET chat_jid = ? WHERE chat_jid = ?", pnStr, c.jid); err != nil {
-			skipped++
-			continue
-		}
-		if _, err := tx.Exec("DELETE FROM messages WHERE chat_jid = ?", c.jid); err != nil {
-			skipped++
-			continue
-		}
-		if _, err := tx.Exec("DELETE FROM chats WHERE jid = ?", c.jid); err != nil {
-			skipped++
-			continue
-		}
-		merged++
-		logger.Infof("LID migration: merged %s -> %s", c.jid, pnStr)
-	}
-	if err := tx.Commit(); err != nil {
-		tx.Rollback()
-		logger.Warnf("LID migration: commit failed: %v", err)
-		return
-	}
-	logger.Infof("LID migration: %d merged, %d skipped (no mapping yet)", merged, skipped)
-}
-
 const revokedContent = "[message deleted by the sender]"
 
 // protocolAction decides what an incoming ProtocolMessage means for the
@@ -837,11 +757,15 @@ func protocolAction(m *waProto.Message) (targetID, newContent string, ok bool) {
 // the event's, and for others' messages the stored sender must be the event's
 // sender (otherwise any group member could rewrite anyone's message).
 func (store *MessageStore) ApplyEdit(id, chatJID, content string, fromMe bool, sender string) error {
+	// Rows stored before senderKey hold an unresolved LID author as the bare user. Taking the bare
+	// digits as that LID is safe enough: the edit must also name this chat and message ID, and
+	// nobody picks their LID to match someone else's phone number.
+	legacy := strings.TrimSuffix(sender, "@"+types.HiddenUserServer)
 	_, err := store.db.Exec(
 		`UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?
-		 AND is_from_me = ? AND (is_from_me = 1 OR sender = ?)
+		 AND is_from_me = ? AND (is_from_me = 1 OR sender IN (?, ?))
 		 AND (? = ? OR COALESCE(media_type, '') != 'audio')`,
-		content, id, chatJID, fromMe, sender, content, revokedContent)
+		content, id, chatJID, fromMe, sender, legacy, content, revokedContent)
 	return err
 }
 
@@ -853,7 +777,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	if msg.Message.GetProtocolMessage() != nil {
 		if id, content, ok := protocolAction(msg.Message); ok {
 			chat := resolveToPN(client, msg.Info.Chat).String()
-			if err := messageStore.ApplyEdit(id, chat, content, msg.Info.IsFromMe, resolveToPN(client, msg.Info.Sender).User); err != nil {
+			if err := messageStore.ApplyEdit(id, chat, content, msg.Info.IsFromMe, senderKey(client, msg.Info.Sender)); err != nil {
 				logger.Warnf("Failed to apply edit/revoke: %v", err)
 				return false
 			}
@@ -862,7 +786,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	}
 	// Normalize LID -> PN so the same contact doesn't split across two chat_jid values.
 	chatJID := resolveToPN(client, msg.Info.Chat).String()
-	sender := resolveToPN(client, msg.Info.Sender).User
+	sender := senderKey(client, msg.Info.Sender)
 	senderJID := resolveToPN(client, msg.Info.Sender).String()
 
 	// Enrich senders table with identity data from this event.
@@ -4334,7 +4258,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				if client != nil && client.Store != nil && client.Store.ID != nil {
 					own = *client.Store.ID
 				}
-				sender := resolveToPN(client, historySender(jid, own, msg.Message)).User
+				sender := senderKey(client, historySender(jid, own, msg.Message))
 				if sender == "" {
 					logger.Warnf("History message %s has unknown sender", msg.Message.GetKey().GetID())
 				}
@@ -4613,12 +4537,14 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 	}
 
 	isGroup := jid.Server == types.GroupServer
-	senderJID := jid
+	author := jid
 	if isGroup {
 		if sender == "" || sender == jid.User || sender == jid.String() {
 			return fmt.Errorf("unknown group message sender")
 		}
-		senderJID = types.JID{User: sender, Server: types.DefaultUserServer}
+		if author, err = parseSender(sender); err != nil {
+			return fmt.Errorf("invalid message sender: %v", err)
+		}
 	}
 
 	mediaRetryCache.store(messageID, mediaRetryEntry{
@@ -4631,7 +4557,7 @@ func requestMediaRetry(client *whatsmeow.Client, messageStore *MessageStore, mes
 		ID: messageID,
 		MessageSource: types.MessageSource{
 			Chat:     jid,
-			Sender:   senderJID,
+			Sender:   author,
 			IsFromMe: isFromMe,
 			IsGroup:  isGroup,
 		},

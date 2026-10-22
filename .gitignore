@@ -5,6 +5,7 @@ whatsapp-bridge/bridge.err.log
 whatsapp-bridge/bridge.log
 whatsapp-bridge/whatsapp-bridge
 whatsapp-bridge/whatsapp-client
+whatsapp-bridge/store/
 whatsapp-bridge/transcription.env
 whatsapp-bridge-personal/
 

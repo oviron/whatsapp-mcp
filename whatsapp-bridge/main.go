@@ -2009,7 +2009,7 @@ func downloadMedia(client mediaDownloadClient, messageStore *MessageStore, messa
 		MediaType:     waMediaType,
 	}
 
-	if err := writeMediaFile(localPath, fileLength, fileSHA256, func(file *os.File) error {
+	if err := writeMediaFile(localPath, fileLength, fileSHA256, func(file whatsmeow.File) error {
 		if client == nil {
 			return whatsmeow.ErrClientIsNil
 		}
@@ -4708,7 +4708,7 @@ func handleMediaRetry(client mediaDownloadClient, messageStore *MessageStore, ev
 		fmt.Printf("MEDIA RETRY %s: ERROR %v\n", evt.MessageID, err)
 		return
 	}
-	if err := writeMediaFile(localPath, entry.fileLength, entry.fileSHA256, func(file *os.File) error {
+	if err := writeMediaFile(localPath, entry.fileLength, entry.fileSHA256, func(file whatsmeow.File) error {
 		if client == nil {
 			return whatsmeow.ErrClientIsNil
 		}

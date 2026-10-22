@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,5 +395,22 @@ func TestMediaRetrySameIDInTwoChats(t *testing.T) {
 	c.forget("b@s.whatsapp.net", "id")
 	if e, ok := c.consume("a@s.whatsapp.net", "id", keyIs("ka")); !ok || e.chatJID != "a@s.whatsapp.net" {
 		t.Fatalf("a failed request in one chat dropped the other: %+v, %v", e, ok)
+	}
+}
+
+func TestMediaDownloadNextHostStartsOver(t *testing.T) {
+	data := []byte("complete media contents")
+	hash := sha256.Sum256(data)
+	path := filepath.Join(t.TempDir(), "media.ogg")
+	// whatsmeow copies each host's body with io.Copy from a TeeReader and does not rewind between hosts.
+	err := writeMediaFile(path, uint64(len(data)), hash[:], func(f whatsmeow.File) error {
+		if _, err := io.Copy(f, io.TeeReader(bytes.NewReader([]byte("corrupt body from the first host")), io.Discard)); err != nil {
+			return err
+		}
+		_, err := io.Copy(f, io.TeeReader(bytes.NewReader(data), io.Discard))
+		return err
+	})
+	if got, _ := os.ReadFile(path); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("second host's download: %q, %v", got, err)
 	}
 }

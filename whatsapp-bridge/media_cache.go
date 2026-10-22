@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"go.mau.fi/whatsmeow"
 )
 
 var mediaLocks = struct {
@@ -62,14 +64,29 @@ func validMediaFile(path string, length uint64, hash []byte) bool {
 	return bytes.Equal(h.Sum(nil), hash)
 }
 
-func writeMediaFile(path string, length uint64, hash []byte, download func(*os.File) error) error {
+// attemptFile starts the file over on every download attempt. whatsmeow writes each attempt's
+// body with one io.Copy, but moves on to the next CDN host without rewinding, so the next
+// host's bytes would land after the failed ones.
+type attemptFile struct{ *os.File }
+
+func (f attemptFile) ReadFrom(r io.Reader) (int64, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return 0, err
+	}
+	if err := f.Truncate(0); err != nil {
+		return 0, err
+	}
+	return io.Copy(f.File, r)
+}
+
+func writeMediaFile(path string, length uint64, hash []byte, download func(whatsmeow.File) error) error {
 	file, err := os.CreateTemp(filepath.Dir(path), ".media-*.tmp")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(file.Name())
 	defer file.Close()
-	if err := download(file); err != nil {
+	if err := download(attemptFile{file}); err != nil {
 		return err
 	}
 	if err := file.Close(); err != nil {

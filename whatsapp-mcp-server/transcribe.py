@@ -125,7 +125,7 @@ def _is_expired(ts):
 def pending_audios(conn, limit=None):
     sql = ("SELECT id, chat_jid, hex(file_sha256), file_length, timestamp FROM messages "
            "WHERE media_type='audio' AND (content IS NULL OR content='') "
-           "ORDER BY timestamp DESC")
+           "ORDER BY julianday(timestamp) DESC, rowid DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()

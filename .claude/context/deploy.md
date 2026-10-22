@@ -15,7 +15,9 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
   pareamento). MCP server lê o token equivalente via `WHATSAPP_API_AUTH_TOKEN`.
 - **Múltiplas contas na mesma VPS**: rodar duas (ou mais) instâncias da bridge é só questão de
   diretório + porta (`WHATSAPP_BRIDGE_PORT`) + token diferentes por instância — cada uma seu
-  próprio `store/`, sem interferência entre sessões.
+  próprio `store/`. Compartilhado entre instâncias do mesmo usuário: o guard de bridge ativa
+  do `install.sh` (`pgrep`), os nomes de serviço que ele gera e o lock de transcrição
+  (`wa_transcribe.lock` no TMPDIR) — com várias instâncias, registrar os serviços à mão.
 - **Rede privada é sua escolha** (Tailscale, WireGuard, SSH tunnel, VPN da nuvem que você usa) —
   a bridge só precisa que `BIND_ADDR` aponte pra uma interface alcançável pelo MCP client.
   Cuidado com ordem de boot: se a bridge sobe **antes** da VPN/interface estar pronta, o bind

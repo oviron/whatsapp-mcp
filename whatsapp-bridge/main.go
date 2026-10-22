@@ -64,7 +64,9 @@ type Message struct {
 
 // Database handler for storing message history
 type MessageStore struct {
-	db *sql.DB
+	db        *sql.DB
+	ftsCancel context.CancelFunc
+	ftsDone   chan struct{}
 }
 
 // Initialize message store
@@ -128,6 +130,11 @@ func NewMessageStore() (*MessageStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
+	ftsAvailable, err := initMessageFTS(db)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("failed to initialize message search: %v", err)
+	}
 	if err := removeStatusBroadcast(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to remove status broadcast: %v", err)
@@ -146,11 +153,19 @@ func NewMessageStore() (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to repair history senders: %v", err)
 	}
 
-	return &MessageStore{db: db}, nil
+	messageStore := &MessageStore{db: db}
+	if ftsAvailable {
+		messageStore.startMessageFTSBackfill()
+	}
+	return messageStore, nil
 }
 
 // Close the database connection
 func (store *MessageStore) Close() error {
+	if store.ftsCancel != nil {
+		store.ftsCancel()
+		<-store.ftsDone
+	}
 	return store.db.Close()
 }
 
@@ -2651,6 +2666,18 @@ func parseISODate(s string) (time.Time, error) {
 }
 
 func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
+	var useFTS bool
+	if req.Query != nil && *req.Query != "" {
+		var err error
+		useFTS, err = messageFTSReady(db)
+		if err != nil {
+			return MessagesResponse{}, err
+		}
+	}
+	return listMessagesWithSearch(db, req, useFTS)
+}
+
+func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (MessagesResponse, error) {
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 20
@@ -2696,8 +2723,15 @@ func listMessages(db *sql.DB, req MessagesRequest) (MessagesResponse, error) {
 		params = append(params, *req.ChatJID)
 	}
 	if req.Query != nil && *req.Query != "" {
-		whereClauses = append(whereClauses, "unaccent(messages.content) LIKE unaccent(?)")
-		params = append(params, "%"+*req.Query+"%")
+		if match := literalFTSQuery(*req.Query); useFTS && match == "" {
+			whereClauses = append(whereClauses, "0") // only separators: no word to find
+		} else if useFTS {
+			whereClauses = append(whereClauses, "messages.rowid IN (SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?)")
+			params = append(params, match)
+		} else {
+			whereClauses = append(whereClauses, "unaccent(messages.content) LIKE unaccent(?)")
+			params = append(params, "%"+*req.Query+"%")
+		}
 	}
 	if len(whereClauses) > 0 {
 		queryParts = append(queryParts, "WHERE "+strings.Join(whereClauses, " AND "))

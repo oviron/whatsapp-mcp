@@ -63,12 +63,14 @@ READONLY = os.environ.get("MCP_READONLY", "").strip().lower() in ("1", "true", "
 
 def read_tool(fn):
     # readOnlyHint lets Claude and ChatGPT skip the "this changes something" confirmation for pure reads.
-    return mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False))(fn)
+    # structured_output=False: the return hints are loose (strings, dataclasses), so the SDK must not validate against them.
+    return mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False),
+                    structured_output=False)(fn)
 
 
 def write_tool(fn):
     # download_media counts as a write: it writes files to disk.
-    return fn if READONLY else mcp.tool()(fn)
+    return fn if READONLY else mcp.tool(structured_output=False)(fn)
 
 
 @read_tool

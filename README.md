@@ -308,7 +308,7 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
 
 #### Prerequisites
 
-- Go 1.25+ (go.mod asks for 1.26: Go downloads that toolchain by itself the first time)
+- Go 1.25+ (go.mod asks for Go 1.26 and the patched 1.27.3 toolchain: Go downloads it by itself the first time)
 - Python 3.9+
 - Claude Desktop (or Cursor)
 - UV: `curl -LsSf https://astral.sh/uv/install.sh | sh`

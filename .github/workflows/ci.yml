@@ -30,16 +30,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      # apt mirrors sometimes stall for good: bound each attempt and retry instead of hanging the job.
+      # apt mirrors stall for minutes at a time; the static build comes from GitHub's own CDN.
       - name: Install ffmpeg
         timeout-minutes: 10
         run: |
+          url=https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
           for attempt in 1 2 3; do
-            sudo timeout 180 apt-get update -o Acquire::Retries=3 &&
-              sudo timeout 180 apt-get install -y --no-install-recommends ffmpeg && exit 0
-            echo "ffmpeg install attempt $attempt failed"
+            curl -fsSL --max-time 180 "$url" | tar -xJ -C "$RUNNER_TEMP" --strip-components=2 \
+              ffmpeg-master-latest-linux64-gpl/bin/ffmpeg ffmpeg-master-latest-linux64-gpl/bin/ffprobe && break
+            echo "ffmpeg download attempt $attempt failed"
+            [ "$attempt" = 3 ] && exit 1
           done
-          exit 1
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Unit tests
         working-directory: whatsapp-mcp-server
         run: uv run python -m unittest discover -p 'test_*.py'

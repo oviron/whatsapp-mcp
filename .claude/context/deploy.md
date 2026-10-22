@@ -52,14 +52,14 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## start-bridge.sh
 
-- `cd` próprio dir, source `transcription.env` opcional, `WHATSAPP_BRIDGE_PORT=8081 exec ./whatsapp-bridge`.
+- `cd` próprio dir, source `transcription.env` opcional, `WHATSAPP_BRIDGE_PORT=<porta do install.sh, default 8080> exec ./whatsapp-bridge`.
 - `transcription.env` é **gitignored** (path pessoal + prompt).
 
 ## Build
 
 - `cd whatsapp-bridge && go build -o whatsapp-bridge .` — recompilar após mudar main.go (binário stale não tem fixes).
 - `go run main.go` = dev (binário temp em /var/folders, morre ao fechar terminal). Loga no terminal, NÃO em arquivo → recover_audios não funciona com go run.
-- Matar órfãos de porta: `lsof -ti TCP:8081 | xargs kill`. `go run` spawna child `main` que sobrevive ao kill do pai.
+- Matar órfãos de porta: `lsof -ti TCP:${WHATSAPP_BRIDGE_PORT:-8080} | xargs kill`. `go run` spawna child `main` que sobrevive ao kill do pai.
 
 ## install.sh (para outros)
 
@@ -74,8 +74,8 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## QR / auth
 
-- Local (install.sh default): `http://localhost:8081/qr` no browser (PNG raw em `/qr.png`). macOS salva `/tmp/whatsapp-qr.png` e abre no Preview. QR renova a cada ~20s.
-- Bridge remota: `/qr`/`/qr.png` ficam **sempre sem auth** mesmo com `API_AUTH_TOKEN` setado (é o próprio fluxo de pareamento) — acessar via túnel SSH (`ssh -L 8081:<bind-addr>:8081 <host>`) ou direto pela rede privada se sua máquina já estiver nela.
+- Local (install.sh default): `http://localhost:8080/qr` no browser (PNG raw em `/qr.png`). macOS salva `/tmp/whatsapp-qr.png` e abre no Preview. QR renova a cada ~20s.
+- Bridge remota: `/qr`/`/qr.png` ficam **sempre sem auth** mesmo com `API_AUTH_TOKEN` setado (é o próprio fluxo de pareamento) — acessar via túnel SSH (`ssh -L 8080:<bind-addr>:<porta> <host>`) ou direto pela rede privada se sua máquina já estiver nela.
 - **Re-parear:** QR só é emitido no startup quando `client.Store.ID == nil` (sem sessão em `whatsapp.db`). Logout remoto apaga a sessão mas NÃO re-entra no loop de QR em runtime — `/qr` fica preso em "connected". Precisa reiniciar o processo (`kill <pid>`; systemd/launchd com restart automático religa sozinho). Logout pelo celular já zera `whatsmeow_device`; aí o bridge sobe limpo e gera QR.
 - History sync ao parear é limitado (poucas msgs/conversas recentes), não histórico completo — normal do multi-device. Backup `messages.db` antes (INSERT OR REPLACE pode sobrescrever).
 

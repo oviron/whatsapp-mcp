@@ -66,6 +66,25 @@ class RecoverCachedTest(unittest.TestCase):
         self.assertEqual(self.contents(), {("same", "chat"): recover_audios.SENTINEL_NOT_ON_PHONE,
                                            ("same", "other"): "text"})
 
+    def test_cached_copy_does_not_hide_the_same_id_in_another_chat(self):
+        self.audio("same", "cached", b"recovered audio")
+        self.audio("same", "other")
+        recover_audios.main()
+        self.retry.assert_called_once_with("same", "other")
+        self.assertEqual(self.contents()[("same", "cached")], "transcript")
+
+    def test_late_not_on_phone_leaves_a_cached_audio_transcribed(self):
+        self.audio("cached", "chat", b"recovered audio")
+        self.audio("asked", "chat")
+
+        def answer(msg_id, chat_jid):
+            with open(self.log_file, "a") as f:
+                f.write("MEDIA RETRY cached: NOTONPHONE\n")
+            return True
+        self.retry.side_effect = answer
+        recover_audios.main()
+        self.assertEqual(self.contents()[("cached", "chat")], "transcript")
+
 
 if __name__ == "__main__":
     unittest.main()

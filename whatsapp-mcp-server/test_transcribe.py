@@ -87,5 +87,30 @@ class EngineReadyTest(unittest.TestCase):
         self.assertIn("WHISPER_CLI", reason)
 
 
+
+class LanguageAndPromptTest(unittest.TestCase):
+    def _patch(self, language, prompt):
+        for name, value in (("TRANSCRIPTION_LANGUAGE", language), ("WHISPER_PROMPT", prompt)):
+            patcher = unittest.mock.patch.object(transcribe, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_auto_lets_whisper_detect(self):
+        self._patch("auto", "")
+        cmd = transcribe._whisper_cli_cmd("a.wav", "out")
+        self.assertEqual(cmd[cmd.index("-l") + 1], "auto")
+        self.assertNotIn("--prompt", cmd)
+        self.assertEqual(transcribe._api_form_data(), {"model": transcribe.TRANSCRIPTION_API_MODEL})
+
+    def test_configured_language_and_prompt_reach_both_engines(self):
+        self._patch("en", "Meeting notes.")
+        cmd = transcribe._whisper_cli_cmd("a.wav", "out")
+        self.assertEqual(cmd[cmd.index("-l") + 1], "en")
+        self.assertEqual(cmd[cmd.index("--prompt") + 1], "Meeting notes.")
+        data = transcribe._api_form_data()
+        self.assertEqual(data["language"], "en")
+        self.assertEqual(data["prompt"], "Meeting notes.")
+
+
 if __name__ == "__main__":
     unittest.main()

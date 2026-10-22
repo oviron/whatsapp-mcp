@@ -111,6 +111,22 @@ class LanguageAndPromptTest(unittest.TestCase):
         self.assertEqual(data["language"], "en")
         self.assertEqual(data["prompt"], "Meeting notes.")
 
+    def test_env_is_read_and_normalised(self):
+        import os, subprocess, sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        probe = "import transcribe as t; print(repr((t.TRANSCRIPTION_LANGUAGE, t.WHISPER_PROMPT)))"
+
+        def read(**env):
+            clean = {k: v for k, v in os.environ.items()
+                     if k not in ("TRANSCRIPTION_LANGUAGE", "TRANSCRIPTION_PROMPT")}
+            out = subprocess.run([sys.executable, "-c", probe], cwd=here, env={**clean, **env},
+                                 capture_output=True, text=True, check=True)
+            return out.stdout.strip()
+
+        self.assertEqual(read(), repr(("auto", "")))
+        self.assertEqual(read(TRANSCRIPTION_LANGUAGE="  "), repr(("auto", "")))
+        self.assertEqual(read(TRANSCRIPTION_LANGUAGE=" PT ", TRANSCRIPTION_PROMPT="Olá."), repr(("pt", "Olá.")))
+
 
 if __name__ == "__main__":
     unittest.main()

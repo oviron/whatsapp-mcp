@@ -51,9 +51,8 @@ def _bridge_auth_headers():
 # --- Transcription engine configuration (all via env so the repo is portable) ---
 #
 # Engine selection: TRANSCRIPTION_ENGINE = "local" (whisper.cpp) | "api" (OpenAI/Groq).
-# Defaults reproduce the original author's local setup exactly, so an existing
-# install keeps working with no env changes. A fresh clone with neither engine
-# configured does nothing (see engine_ready / main) rather than marking audios.
+# A clone with neither engine configured does nothing (see engine_ready / main)
+# rather than marking audios.
 TRANSCRIPTION_ENGINE = os.environ.get("TRANSCRIPTION_ENGINE", "local").lower()
 
 # Local backend (whisper.cpp)

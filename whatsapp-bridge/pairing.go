@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"time"
+
+	"github.com/mattn/go-isatty"
+	"github.com/mdp/qrterminal"
 )
 
 // bridgeOptions are the command-line switches; everything else is configured through the environment.
@@ -71,4 +75,16 @@ func logoutBridge(c logoutClient) (bool, error) {
 		return false, errLogoutOffline
 	}
 	return true, c.Logout(context.Background())
+}
+
+func stdoutIsTerminal() bool {
+	return isatty.IsTerminal(os.Stdout.Fd())
+}
+
+func printTerminalQR(code string, isTerminal func() bool) {
+	if !isTerminal() {
+		return
+	}
+	fmt.Println("\nScan this QR code with your WhatsApp app:")
+	qrterminal.GenerateHalfBlock(code, qrterminal.L, os.Stdout)
 }

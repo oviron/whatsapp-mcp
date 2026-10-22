@@ -22,7 +22,7 @@ import time
 import requests
 
 from transcribe import (DB_PATH, API_BASE, transcribe, write_content,
-                        engine_ready, SENTINEL_EMPTY, _bridge_auth_headers, cached_audio)
+                        engine_ready, SENTINEL_EMPTY, _bridge_auth_headers, cached_audio, log)
 
 BRIDGE_LOG = os.environ.get("WHATSAPP_BRIDGE_LOG", "/tmp/wa-bridge.log")
 SENTINEL_NOT_ON_PHONE = "[áudio indisponível: não está mais no telefone]"
@@ -35,11 +35,6 @@ RE_LINE = re.compile(r"MEDIA RETRY (\w+): (\w+)")
 RES_SUCCESS = "SUCCESS"
 RES_NOTONPHONE = "NOTONPHONE"
 RES_ERROR = "ERROR"
-
-
-def log(msg):
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
-
 
 def unavailable_audios(conn, limit):
     sql = ("SELECT id, chat_jid FROM messages "
@@ -187,7 +182,7 @@ def main():
             if text:
                 write_content(msg_id, chat_jid, text)
                 transcribed += 1
-                log(f"  {msg_id[:12]} ok: {text[:50]}...")
+                log(f"id={msg_id[:12]} chat={chat_jid!r} type=audio length={len(text)} ok", content=text)
             else:
                 write_content(msg_id, chat_jid, SENTINEL_EMPTY)
                 empty += 1

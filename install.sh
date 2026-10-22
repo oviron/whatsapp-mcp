@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # WhatsApp MCP — one-line installer
 # Usage: curl -fsSL https://raw.githubusercontent.com/rodrigopg/whatsapp-mcp/main/install.sh | bash
@@ -91,6 +92,10 @@ else
   info "Cloning into ${INSTALL_DIR}…"
   git clone "$REPO_URL" "$INSTALL_DIR"
 fi
+chmod 700 "$INSTALL_DIR"
+[ ! -f "$INSTALL_DIR/transcription.env" ] || chmod 600 "$INSTALL_DIR/transcription.env"
+touch "$INSTALL_DIR/bridge.log"
+chmod 600 "$INSTALL_DIR/bridge.log"
 success "Repository ready"
 
 # ── build Go bridge ──────────────────────────────────────────────────────────
@@ -177,6 +182,10 @@ fi
 LAUNCH_SCRIPT="$INSTALL_DIR/start-bridge.sh"
 cat > "$LAUNCH_SCRIPT" <<LAUNCH
 #!/usr/bin/env bash
+set -e
+umask 077
+chmod 700 "$INSTALL_DIR"
+[ ! -f "$INSTALL_DIR/transcription.env" ] || chmod 600 "$INSTALL_DIR/transcription.env"
 cd "$INSTALL_DIR/whatsapp-bridge"
 # Transcription is opt-in. To enable it, create transcription.env next to this
 # script with your engine vars (TRANSCRIPTION_ENGINE, WHISPER_CLI/WHISPER_MODEL
@@ -213,6 +222,7 @@ Description=WhatsApp MCP bridge
 ExecStart=$INSTALL_DIR/start-bridge.sh
 Restart=always
 RestartSec=5
+UMask=0077
 
 [Install]
 WantedBy=default.target
@@ -274,6 +284,7 @@ write_plist() {
 <dict>
   <key>Label</key>             <string>com.whatsapp-mcp.bridge</string>
   <key>ProgramArguments</key>  <array><string>$INSTALL_DIR/start-bridge.sh</string></array>
+  <key>Umask</key>             <integer>63</integer>
   <key>RunAtLoad</key>         $bool_tag
   <key>KeepAlive</key>         $bool_tag
   <key>StandardOutPath</key>   <string>$INSTALL_DIR/bridge.log</string>

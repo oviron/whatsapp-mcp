@@ -8,6 +8,7 @@ import requests
 import json
 import audio
 import tts
+from private_logs import redact_urls
 from media_paths import MediaPathError, open_media, media_snapshot
 
 # This server runs over MCP's stdio transport, where stdout carries JSON-RPC
@@ -593,33 +594,30 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
 
         response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
 
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success", False):
-                path = result.get("path")
-                logger.info("Media downloaded successfully: %s", path)
-                return path
-            else:
-                logger.warning("Download failed: %s", result.get('message', 'Unknown error'))
-                return None
-        elif response.status_code == 401:
+        if response.status_code == 401:
             logger.warning(
                 "Download auth error: HTTP 401 - check WHATSAPP_API_AUTH_TOKEN "
                 "matches the bridge's API_AUTH_TOKEN",
             )
             return None
-        else:
-            logger.warning("Download error: HTTP %s - %s", response.status_code, response.text)
-            return None
+        result = response.json()
+        if response.status_code == 200 and result.get("success", False):
+            path = result.get("path")
+            logger.info("Media downloaded: chat=%s message=%s", chat_jid, message_id)
+            return path
+        logger.warning("Download failed: chat=%s message=%s HTTP %s: %s",
+                       chat_jid, message_id, response.status_code,
+                       redact_urls(result.get("message", "Unknown error")))
+        return None
 
     except requests.RequestException as e:
-        logger.warning("Download request error: %s", e)
+        logger.warning("Download request error: %s", redact_urls(e))
         return None
     except json.JSONDecodeError:
-        logger.warning("Error parsing download response: %s", response.text)
+        logger.warning("Error parsing download response: HTTP %s", response.status_code)
         return None
     except Exception as e:
-        logger.warning("Unexpected download error: %s", e)
+        logger.warning("Unexpected download error: %s", redact_urls(e))
         return None
 
 

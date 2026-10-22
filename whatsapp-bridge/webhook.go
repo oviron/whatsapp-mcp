@@ -133,12 +133,19 @@ func (d *webhookDispatcher) deliver(p webhookPayload) {
 	fmt.Printf("webhook: delivery %s dropped after %d attempts\n", deliveryID, webhookAttempts)
 }
 
-// redactURLErr strips the URL that net/http embeds in client errors.
+type redactedURLError struct{ error }
+
+func (e redactedURLError) Error() string {
+	return privateURLPattern.ReplaceAllString(e.error.Error(), "<url>")
+}
+func (e redactedURLError) Unwrap() error { return e.error }
+
+// Preserve error identity for retry classification while hiding signed URLs.
 func redactURLErr(err error) error {
-	if ue, ok := err.(*url.Error); ok {
-		return ue.Err
+	if err == nil || !privateURLPattern.MatchString(err.Error()) {
+		return err
 	}
-	return err
+	return redactedURLError{err}
 }
 
 // emitWebhook is the single hook called from handleMessage for live messages.

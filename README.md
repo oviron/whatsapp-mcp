@@ -63,11 +63,13 @@ It connects to your **personal WhatsApp account** directly via the WhatsApp web 
 
 ### Bug fixes & compatibility
 - **whatsmeow API updated** — the upstream bridge broke when whatsmeow added `context.Context` to all API calls. Fixed across all call sites.
-- **PNG QR fallback** — QR code is saved to `/tmp/whatsapp-qr.png` and opened automatically on macOS if the terminal rendering is hard to scan.
+- **PNG QR fallback** — QR code is saved to `whatsapp-bridge/store/whatsapp-qr.png` with owner-only permissions, opened automatically on macOS, and deleted after successful pairing. It is printed only when stdout is a terminal.
 
 ### Security
 - **REST API bound to `127.0.0.1` by default** — the upstream bound to `0.0.0.0`, meaning anyone on the same LAN could send messages as you. Set `BIND_ADDR=<ip>` to opt into wider exposure (`0.0.0.0`, or a specific interface like a Tailscale address). If `BIND_ADDR` is not loopback, `API_AUTH_TOKEN` becomes mandatory — the bridge refuses to start without it, and every `/api/*` request must send `Authorization: Bearer <token>`. `GET /healthz` (connected yes/no, nothing else) and `/qr` stay open without a token. Without a token (loopback), `/api/*` refuses requests that carry an `Origin` header or a `Host` other than loopback/`BIND_ADDR`, so a web page in your browser cannot reach it (cross-site POST or DNS rebinding). The bridge exits if it cannot bind its port.
 - **Outbound media limited to `WHATSAPP_MEDIA_DIRS`**: `/api/send`, `send_file` and `send_audio_message` accept only regular files up to 100 MiB under these roots, checked after resolving symlinks and read from the checked file descriptor. Default roots: `~/Downloads`, the OS temp directory and the bridge's `store/<chat>/` (forwarding downloaded media). Other home files, including Documents and projects, require an explicit root. Hidden top-level home entries (`~/.ssh`, `~/.aws`, `~/.config`, `~/.env`...), `~/Library` and `~/AppData` are excluded even with custom roots, except for OS temp and `store/<chat>/` inside them. Files directly in `store/` (session and message databases) are always refused. Comparisons follow filesystem identity, including case aliases on macOS and Windows. Set `WHATSAPP_MEDIA_DIRS` in both the bridge and the MCP server environment as an absolute path list (`:` on macOS/Linux, `;` on Windows), e.g. `WHATSAPP_MEDIA_DIRS=/srv/whatsapp-uploads:/tmp`; a nonempty value replaces the defaults. Include OS temp for TTS and audio conversion and `store/` for forwarding if you use them. The entire home directory is allowed only when explicitly listed, subject to the exclusions above.
+
+The bridge creates `store/` and its subdirectories with mode `0700`, and databases, SQLite sidecars and media files with mode `0600`. Startup restricts wider permissions on existing stores. Unix modes do not apply on Windows. The installer and generated services use umask `077`.
 
 ### Contact name resolution (LID migration)
 WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.net`) to internal LID JIDs (`xxx@lid`) for privacy. This broke contact search, `get_direct_chat_by_contact`, and `list_messages` in the upstream. Fixed with:
@@ -81,7 +83,7 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
 - New `senders` table in `messages.db` stores `full_name`, `push_name`, `business_name` per sender
 - `SyncAllContacts` bulk-upserts the whatsmeow contact store into `senders` on connect and after each history sync
 - Incoming messages enrich `senders` with `PushName` + contact store data
-- Terminal log now shows human-readable names instead of raw phone numbers
+- Message logs contain JIDs and metadata; text requires `WHATSAPP_LOG_CONTENT=1`.
 - `GetChatName` checks the local `senders` table before hitting the live contact store
 
 ### Outbound message persistence
@@ -123,7 +125,7 @@ Optional, for both engines:
 
 **Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:
 - **`go run main.go` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.
-- **`start-bridge.sh` (from `install.sh`) or macOS launchd auto-start** — `export` in your shell will **not** reach launchd. Instead create `~/.whatsapp-mcp/transcription.env` with the vars (one `export VAR=value` per line); `start-bridge.sh` sources it, so both the manual launcher and launchd pick them up.
+- **`start-bridge.sh` (from `install.sh`) or macOS launchd auto-start** — `export` in your shell will **not** reach launchd. Instead create `~/.whatsapp-mcp/transcription.env` with owner-only permissions (`umask 077` before creating it, `chmod 600` if it already exists) and the vars (one `export VAR=value` per line); `start-bridge.sh` sources it, so both the manual launcher and launchd pick them up.
 
 Once an engine is configured: new voice messages become searchable within ~5 minutes, and **`list_messages` matches their transcribed text** like any other message.
 
@@ -173,6 +175,7 @@ The optional `notice` is a text message sent right before the voice note, and on
 The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/piper-voices`](https://huggingface.co/rhasspy/piper-voices) has `pt/pt_BR` voices (cadu, used in the example above, plus faber, jeff and edresson). They are fine-tunes of the `lessac` (en_US) voice, whose dataset carries its own license (Blizzard 2013), so check the terms before using one for anything beyond personal use.
 
 ### Configuration
+- `WHATSAPP_LOG_CONTENT=1` env var (bridge and Python) - include message text and transcripts in logs; by default message logs contain only metadata. Also accepts `true`, `yes`, and `on` (case-insensitive). Library payloads and URLs in library/download errors are redacted. TTS API response bodies are omitted; local CLI stderr remains available for diagnosis.
 - `WHATSAPP_BRIDGE_PORT` env var — change the REST API port (default `8080`)
 - `WHATSAPP_API_BASE_URL` env var — point the Python MCP server at a non-default bridge URL
 - `WHATSAPP_API_AUTH_TOKEN` env var — bearer token the MCP server sends as `Authorization: Bearer <token>`; required if the bridge's `API_AUTH_TOKEN` is set
@@ -283,7 +286,7 @@ Runs the Go bridge (plus ffmpeg and the optional transcription sweep) in a conta
 ```bash
 cp .env.example .env            # set API_AUTH_TOKEN (openssl rand -hex 32)
 docker compose up -d --build
-docker compose logs -f bridge   # scan the QR, or open http://127.0.0.1:8080/qr
+docker compose logs -f bridge   # pairing instructions; open http://127.0.0.1:8080/qr
 ```
 
 Messages and sessions live in `./data` (back it up before re-pairing). The API is published on `127.0.0.1:8080` only. Point the MCP server at it with `WHATSAPP_API_BASE_URL=http://127.0.0.1:8080/api` and `WHATSAPP_API_AUTH_TOKEN=<same token>`.
@@ -333,7 +336,7 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
    go run main.go
    ```
 
-   On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page auto-refreshes when a new code is generated. On macOS the QR is also saved to `/tmp/whatsapp-qr.png` and opened in Preview.
+   On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page auto-refreshes when a new code is generated. The QR also appears in an interactive terminal and is saved to `whatsapp-bridge/store/whatsapp-qr.png` (mode `0600`, relative to the clone root), opened in Preview on macOS, and removed after pairing. Service logs do not contain the QR. When pairing by phone code, no QR is shown.
 
    No browser at hand (a VPS, a headless box)? Pair by code instead: start the bridge with `-pair-phone <number in international format>` (or `WHATSAPP_PAIR_PHONE`), and it prints an 8-character code to type on the phone under Linked Devices → Link a Device → Link with phone number instead.
 
@@ -444,7 +447,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 
 ## Troubleshooting
 
-- **QR code not displaying**: terminal QR not working? Check `/tmp/whatsapp-qr.png` (macOS opens it automatically).
+- **QR code not displaying**: open `http://localhost:8080/qr` or check `whatsapp-bridge/store/whatsapp-qr.png` (macOS opens it automatically). Terminal QR output requires a TTY; service logs omit it.
 - **Contacts showing as numbers**: the bridge syncs names on connect. Give it a few seconds after the "Connected" message.
 - **LID contacts not found**: happens when WhatsApp hasn't yet synced the LID→PN mapping locally. Reconnect to trigger a fresh sync.
 - **Bridge lost the session**: on logout (unlinked from the phone, or the session expired) the bridge logs the reason and exits with code 1; under the launchd/systemd service it restarts and serves a fresh QR at `/qr`. When a second bridge connects with the same `store/` WhatsApp drops the first one ("Another client took over this WhatsApp session"): the bridge backs off from 30 s up to 30 min before reconnecting, so stop the duplicate. A temporary ban or an outdated client is logged with the reason; reads keep working from the local database meanwhile. A paired bridge that stays offline for any other reason is reconnected by a watchdog every minute.

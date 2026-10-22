@@ -24,6 +24,7 @@ func (f *fakeSession) IsPaired() bool    { return f.paired }
 type supervisorHarness struct {
 	*connectionSupervisor
 	session *fakeSession
+	deleted bool
 	clock   time.Time
 	timers  []time.Duration
 	pending []func()
@@ -33,10 +34,11 @@ type supervisorHarness struct {
 func newSupervisorHarness() *supervisorHarness {
 	h := &supervisorHarness{session: &fakeSession{paired: true}, clock: time.Unix(1_000_000, 0)}
 	h.connectionSupervisor = &connectionSupervisor{
-		session: h.session,
-		log:     waLog.Noop,
-		exit:    func(code int) { h.exited = append(h.exited, code) },
-		now:     func() time.Time { return h.clock },
+		session:        h.session,
+		sessionDeleted: func() bool { return h.deleted },
+		log:            waLog.Noop,
+		exit:           func(code int) { h.exited = append(h.exited, code) },
+		now:            func() time.Time { return h.clock },
 		after: func(d time.Duration, f func()) {
 			h.timers = append(h.timers, d)
 			h.pending = append(h.pending, f)
@@ -115,15 +117,39 @@ func TestClientOutdatedStopsReconnecting(t *testing.T) {
 	}
 }
 
-func TestLoggedOutExitsNonZeroAfterDelay(t *testing.T) {
+func TestLoggedOutExitsOnceSessionIsDeleted(t *testing.T) {
 	h := newSupervisorHarness()
 	h.handle(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
-	if len(h.exited) != 0 || h.timers[0] != loggedOutExitDelay {
-		t.Fatalf("exits = %v, timer = %v; want a delayed exit", h.exited, h.timers)
+	h.fire()
+	h.reconnect()
+	if len(h.exited) != 0 || h.session.connects != 0 {
+		t.Fatalf("exits = %v, connects = %d; want to wait for the deletion without reconnecting", h.exited, h.session.connects)
 	}
+	h.deleted = true
 	h.fire()
 	if len(h.exited) != 1 || h.exited[0] != 1 {
 		t.Fatalf("exits = %v, want [1]", h.exited)
+	}
+}
+
+func TestLoggedOutExitsAfterTimeoutWithoutDeletion(t *testing.T) {
+	h := newSupervisorHarness()
+	h.handle(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
+	for len(h.exited) == 0 && len(h.timers) < 1000 {
+		h.fire()
+	}
+	if len(h.exited) != 1 || time.Duration(len(h.timers))*logoutPollInterval != logoutDeleteTimeout {
+		t.Fatalf("exits = %v after %d polls, want one exit after %v", h.exited, len(h.timers), logoutDeleteTimeout)
+	}
+}
+
+func TestFailOnPanicReportsFailure(t *testing.T) {
+	handler := failOnPanic(waLog.Noop, func(any) bool { panic("boom") })
+	if handler(&events.Message{}) {
+		t.Fatal("a panicking handler reported success, so whatsmeow would ack the message")
+	}
+	if !failOnPanic(waLog.Noop, func(any) bool { return true })(nil) {
+		t.Fatal("a successful handler reported failure")
 	}
 }
 
@@ -153,15 +179,24 @@ func TestHandleMessageReportsFailedWrites(t *testing.T) {
 		Type: waProto.ProtocolMessage_MESSAGE_EDIT.Enum(), Key: &waProto.MessageKey{ID: proto.String("old")}, EditedMessage: text,
 	}}
 	for name, tc := range map[string]struct {
-		body      *waProto.Message
-		failWrite bool
-		want      bool
+		body       *waProto.Message
+		failWrite  bool
+		failTable  string // only this table refuses writes
+		updateOnly bool
+		want       bool
 	}{
 		"stored":       {body: text, want: true},
 		"nothing":      {body: &waProto.Message{}, want: true},
 		"write fails":  {body: text, failWrite: true},
 		"edit applied": {body: edit, want: true},
 		"edit fails":   {body: edit, failWrite: true},
+		"chat fails":   {body: text, failTable: "chats", updateOnly: true}, // EnsureChat passes, StoreChat fails
+		"mention fails": {body: &waProto.Message{ExtendedTextMessage: &waProto.ExtendedTextMessage{
+			Text: proto.String("hi @333"), ContextInfo: &waProto.ContextInfo{MentionedJID: []string{"333@s.whatsapp.net"}},
+		}}, failTable: "message_mentions"},
+		"poll fails": {body: &waProto.Message{PollCreationMessageV3: &waProto.PollCreationMessage{
+			Name: proto.String("q"), Options: []*waProto.PollCreationMessage_Option{{OptionName: proto.String("a")}},
+		}}, failTable: "polls"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := setupChatStore(t)
@@ -176,6 +211,15 @@ func TestHandleMessageReportsFailedWrites(t *testing.T) {
 				if _, err := s.db.Exec(`
 					CREATE TRIGGER fail_insert BEFORE INSERT ON messages BEGIN SELECT RAISE(FAIL, 'test write failure'); END;
 					CREATE TRIGGER fail_update BEFORE UPDATE ON messages BEGIN SELECT RAISE(FAIL, 'test write failure'); END`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.failTable != "" {
+				q := `CREATE TRIGGER fail_update BEFORE UPDATE ON ` + tc.failTable + ` BEGIN SELECT RAISE(FAIL, 'test write failure'); END`
+				if !tc.updateOnly {
+					q += `; CREATE TRIGGER fail_insert BEFORE INSERT ON ` + tc.failTable + ` BEGIN SELECT RAISE(FAIL, 'test write failure'); END`
+				}
+				if _, err := s.db.Exec(q); err != nil {
 					t.Fatal(err)
 				}
 			}

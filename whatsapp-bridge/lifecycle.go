@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -15,7 +16,8 @@ const (
 	watchdogInterval       = time.Minute
 	streamReplacedMinPause = 30 * time.Second
 	streamReplacedMaxPause = 30 * time.Minute
-	loggedOutExitDelay     = 3 * time.Second
+	logoutPollInterval     = 500 * time.Millisecond
+	logoutDeleteTimeout    = 30 * time.Second
 )
 
 type sessionClient interface {
@@ -33,26 +35,28 @@ func (c whatsmeowSession) IsPaired() bool { return c.Store.ID != nil }
 // that stayed offline anyway. Without it the process lives on with a dead session, so neither
 // launchd KeepAlive nor systemd Restart= ever kicks in.
 type connectionSupervisor struct {
-	session sessionClient
-	log     waLog.Logger
-	exit    func(code int)
-	now     func() time.Time
-	after   func(time.Duration, func())
+	session        sessionClient
+	sessionDeleted func() bool
+	log            waLog.Logger
+	exit           func(code int)
+	now            func() time.Time
+	after          func(time.Duration, func())
 
 	mu            sync.Mutex
 	holdUntil     time.Time // no reconnect before this
-	stopped       bool      // needs a rebuild; reconnecting would only repeat the refusal
+	stopped       bool      // needs a person (rebuild, new QR); reconnecting would only repeat the refusal
 	replacedPause time.Duration
 	lastReplaced  time.Time
 }
 
-func newConnectionSupervisor(client *whatsmeow.Client, log waLog.Logger) *connectionSupervisor {
+func newConnectionSupervisor(client *whatsmeow.Client, log waLog.Logger, sessionDeleted func() bool) *connectionSupervisor {
 	return &connectionSupervisor{
-		session: whatsmeowSession{client},
-		log:     log,
-		exit:    os.Exit,
-		now:     time.Now,
-		after:   func(d time.Duration, f func()) { time.AfterFunc(d, f) },
+		session:        whatsmeowSession{client},
+		sessionDeleted: sessionDeleted,
+		log:            log,
+		exit:           os.Exit,
+		now:            time.Now,
+		after:          func(d time.Duration, f func()) { time.AfterFunc(d, f) },
 	}
 }
 
@@ -91,9 +95,40 @@ func (s *connectionSupervisor) handle(evt any) {
 	case *events.ConnectFailure:
 		s.log.Errorf("WhatsApp refused the connection (%s); retrying every %v", v.Reason, watchdogInterval)
 	case *events.LoggedOut:
-		s.log.Errorf("Logged out of WhatsApp (%s) and the session was removed. Exiting so the service manager restarts the bridge with a new QR code.", v.Reason)
-		// whatsmeow deletes the session right after dispatching LoggedOut; let that finish first.
-		s.after(loggedOutExitDelay, func() { s.exit(1) })
+		s.mu.Lock()
+		s.stopped = true
+		s.mu.Unlock()
+		s.log.Errorf("Logged out of WhatsApp (%s); the session is removed. Exiting so the service manager restarts the bridge with a new QR code.", v.Reason)
+		s.exitAfterLogout(0)
+	}
+}
+
+// exitAfterLogout waits for whatsmeow to delete the session, which it does only after dispatching
+// LoggedOut: exiting earlier restarts into the dead session instead of a QR code.
+func (s *connectionSupervisor) exitAfterLogout(waited time.Duration) {
+	if s.sessionDeleted() {
+		s.exit(1)
+		return
+	}
+	if waited >= logoutDeleteTimeout {
+		s.log.Errorf("The logged-out session is still in store/whatsapp.db after %v; exiting anyway", waited)
+		s.exit(1)
+		return
+	}
+	s.after(logoutPollInterval, func() { s.exitAfterLogout(waited + logoutPollInterval) })
+}
+
+// failOnPanic reports a panicking handler as failed: whatsmeow recovers the panic itself but then
+// acks the message as handled, dropping it for good.
+func failOnPanic(log waLog.Logger, handler func(any) bool) func(any) bool {
+	return func(evt any) (ok bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("Event handler panicked on %T: %v\n%s", evt, r, debug.Stack())
+				ok = false
+			}
+		}()
+		return handler(evt)
 	}
 }
 

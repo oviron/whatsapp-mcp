@@ -872,8 +872,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	}
 
 	if msg.Message.GetPollUpdateMessage() != nil {
-		recordPollVote(client, messageStore, msg, chatJID, sender, logger)
-		return true
+		return recordPollVote(client, messageStore, msg, chatJID, sender, logger)
 	}
 
 	// Extract text content
@@ -911,14 +910,17 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileEncSHA256,
 		fileLength,
 	)
+	stored := err == nil
 	if err == nil {
 		if chatErr := messageStore.StoreChat(chatJID, name, msg.Info.Timestamp); chatErr != nil {
 			logger.Warnf("Failed to store chat: %v", chatErr)
+			stored = false
 		}
 	}
 	if jids := mentionedJIDs(msg.Message); err == nil && len(jids) > 0 {
 		if mErr := storeMentions(messageStore.db, chatJID, msg.Info.ID, jids); mErr != nil {
 			logger.Warnf("Failed to store mentions: %v", mErr)
+			stored = false
 		}
 	}
 
@@ -929,6 +931,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		}
 		if perr := storePoll(messageStore.db, msg.Info.ID, chatJID, poll.GetName(), names, int(poll.GetSelectableOptionsCount())); perr != nil {
 			logger.Warnf("Failed to store poll: %v", perr)
+			stored = false
 		}
 	}
 
@@ -954,7 +957,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 			fmt.Printf("[%s] %s %s: %s\n", timestamp, direction, displayName, content)
 		}
 	}
-	return err == nil
+	return stored
 }
 
 // DownloadMediaRequest represents the request body for the download media API
@@ -3981,8 +3984,11 @@ func main() {
 	defer messageStore.Close()
 
 	// Setup event handling for messages and history sync
-	supervisor := newConnectionSupervisor(client, logger)
-	client.AddEventHandlerWithSuccessStatus(func(evt any) bool {
+	supervisor := newConnectionSupervisor(client, logger, func() bool {
+		devices, err := container.GetAllDevices(context.Background())
+		return err == nil && len(devices) == 0
+	})
+	client.AddEventHandlerWithSuccessStatus(failOnPanic(logger, func(evt any) bool {
 		supervisor.handle(evt)
 		switch v := evt.(type) {
 		case *events.Message:
@@ -4013,7 +4019,7 @@ func main() {
 			}
 		}
 		return true
-	})
+	}))
 
 	// Create channel to track connection success
 	connected := make(chan bool, 1)
@@ -4093,13 +4099,13 @@ func main() {
 	// Wait a moment for connection to stabilize
 	time.Sleep(2 * time.Second)
 
-	if !client.IsConnected() {
-		logger.Errorf("Failed to establish stable connection")
-		os.Exit(1)
+	// A refusal right at connect (ban, outdated client, a second bridge) is the supervisor's to
+	// handle; exiting here would restart straight into it again.
+	if client.IsConnected() {
+		fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
+	} else {
+		logger.Warnf("Not connected to WhatsApp yet; reconnecting in the background")
 	}
-
-	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
-
 	supervisor.watch(watchdogInterval)
 
 	// Merge any chats stored under LID JIDs into their PN equivalents.

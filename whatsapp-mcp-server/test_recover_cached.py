@@ -85,6 +85,30 @@ class RecoverCachedTest(unittest.TestCase):
         recover_audios.main()
         self.assertEqual(self.contents()[("cached", "chat")], "transcript")
 
+    def test_ambiguous_not_on_phone_keeps_the_recovered_twin(self):
+        self.audio("same", "found")
+        self.audio("same", "lost")
+
+        def answer(msg_id, chat_jid):
+            if chat_jid == "found":
+                path = self.root / "found" / "same_audio.ogg"
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(b"recovered audio")
+                with sqlite3.connect(self.db) as conn:
+                    conn.execute("UPDATE messages SET file_sha256=?, file_length=? WHERE chat_jid='found'",
+                                 (hashlib.sha256(b"recovered audio").digest(), len(b"recovered audio")))
+                line = "MEDIA RETRY same: SUCCESS recovered 15 bytes\n"
+            else:
+                line = "MEDIA RETRY same: NOTONPHONE\n"
+            with open(self.log_file, "a") as f:
+                f.write(line)
+            return True
+        self.retry.side_effect = answer
+        recover_audios.main()
+        contents = self.contents()
+        self.assertEqual(contents[("same", "found")], "transcript")
+        self.assertEqual(contents[("same", "lost")], transcribe.SENTINEL_UNAVAILABLE)
+
 
 if __name__ == "__main__":
     unittest.main()

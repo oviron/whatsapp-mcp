@@ -202,9 +202,11 @@ def main():
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.execute("PRAGMA busy_timeout=5000")
     for msg_id in not_on_phone_ids:
-        for chat_jid in attempted.get(msg_id, []):
+        chats = attempted.get(msg_id, [])
+        # With the ID in several chats the answer may belong to any of them; retry next run.
+        if len(chats) == 1 and not recovered_file(chats[0], msg_id):
             conn.execute("UPDATE messages SET content=? WHERE id=? AND chat_jid=?",
-                         (SENTINEL_NOT_ON_PHONE, msg_id, chat_jid))
+                         (SENTINEL_NOT_ON_PHONE, msg_id, chats[0]))
     conn.commit()
     conn.close()
 

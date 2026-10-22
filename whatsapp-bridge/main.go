@@ -120,7 +120,7 @@ func NewMessageStore() (*MessageStore, error) {
 		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
 		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
-	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema)
+	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema)
 	if err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to create tables: %v", err)
@@ -757,7 +757,9 @@ func protocolAction(m *waProto.Message) (targetID, newContent string, ok bool) {
 // the event's, and for others' messages the stored sender must be the event's
 // sender (otherwise any group member could rewrite anyone's message).
 func (store *MessageStore) ApplyEdit(id, chatJID, content string, fromMe bool, sender string) error {
-	// Rows stored before senderKey hold an unresolved LID author as the bare user.
+	// Rows stored before senderKey hold an unresolved LID author as the bare user. Taking the bare
+	// digits as that LID is safe enough: the edit must also name this chat and message ID, and
+	// nobody picks their LID to match someone else's phone number.
 	legacy := strings.TrimSuffix(sender, "@"+types.HiddenUserServer)
 	_, err := store.db.Exec(
 		`UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?

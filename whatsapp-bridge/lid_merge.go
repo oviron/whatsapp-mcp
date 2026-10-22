@@ -14,6 +14,19 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
+// lidMediaSchema holds the renames planned for a merged chat's cached media, written in the
+// merge's own transaction: the files move afterwards, possibly on a later start, and by then the
+// LID rows that name them are gone.
+const lidMediaSchema = `
+	CREATE TABLE IF NOT EXISTS lid_media_moves (
+		lid TEXT,
+		pn TEXT,
+		src TEXT,
+		dst TEXT,
+		PRIMARY KEY (lid, src)
+	);
+`
+
 // senderKey is what messages.sender stores for an author: the phone number when whatsmeow knows
 // the LID's number, otherwise the whole LID JID. A bare LID user would later read as a phone
 // number (a media retry would address <lid>@s.whatsapp.net).
@@ -61,17 +74,35 @@ func migrateLIDChats(client *whatsmeow.Client, store *MessageStore, logger waLog
 		}
 		merged++
 	}
-	// Media moves after the chat's rows: a crash in between leaves a LID directory whose chat is
-	// gone, which this picks up on the next start.
+	// Media moves after the chat's rows; whatever a crash left in between (planned moves, a LID
+	// directory whose chat is gone) is finished here on the next start.
+	moves := map[string]string{}
+	rows, err := store.db.Query(`SELECT DISTINCT lid, pn FROM lid_media_moves`)
+	if err != nil {
+		logger.Warnf("LID migration: failed to read planned media moves: %v", err)
+		rows = nil
+	}
+	for rows != nil && rows.Next() {
+		var lid, pn string
+		if rows.Scan(&lid, &pn) == nil {
+			moves[lid] = pn
+		}
+	}
+	if rows != nil {
+		rows.Close()
+	}
 	lidDirs, _ := filepath.Glob(filepath.Join("store", "*@"+types.HiddenUserServer))
 	for _, dir := range lidDirs {
 		lid := filepath.Base(dir)
 		lidJID, err := types.ParseJID(lid)
 		pn := resolveToPN(client, lidJID)
-		if err != nil || pn.Server != types.DefaultUserServer || chatExists(store.db, lid) {
+		if _, planned := moves[lid]; planned || err != nil || pn.Server != types.DefaultUserServer || chatExists(store.db, lid) {
 			continue
 		}
-		if err := moveChatMedia(store.db, lid, pn.String()); err != nil {
+		moves[lid] = pn.String()
+	}
+	for lid, pn := range moves {
+		if err := moveChatMedia(store.db, lid, pn); err != nil {
 			logger.Warnf("LID migration: media of %s not fully moved: %v", lid, err)
 		}
 	}
@@ -95,6 +126,11 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 	}
 	defer tx.Rollback()
 	steps := []string{
+		// The merged row keeps the phone-number copy's filename when it has one (below).
+		`INSERT OR REPLACE INTO lid_media_moves (lid, pn, src, dst)
+			SELECT ?1, ?2, l.id || '_' || l.filename, l.id || '_' || COALESCE(NULLIF(p.filename, ''), l.filename)
+			FROM messages l LEFT JOIN messages p ON p.chat_jid = ?2 AND p.id = l.id
+			WHERE l.chat_jid = ?1 AND COALESCE(l.filename, '') != ''`,
 		`INSERT INTO chats (jid, name, last_message_time)
 			SELECT ?2, name, last_message_time FROM chats WHERE jid = ?1
 			ON CONFLICT(jid) DO UPDATE SET
@@ -143,13 +179,31 @@ func mergeLIDChat(db *sql.DB, lid, pn string) error {
 
 // moveChatMedia moves downloaded media from the LID chat's directory to the phone-number one, so
 // the cache (often the only copy once the CDN expired) stays where downloadMedia looks: under
-// <id>_<filename> of the merged row, whose filename may come from the phone-number copy.
+// <id>_<filename> of the merged row, as planned by mergeLIDChat. Unplanned files keep their name.
 func moveChatMedia(db *sql.DB, lid, pn string) error {
+	planned := map[string]string{}
+	rows, err := db.Query(`SELECT src, dst FROM lid_media_moves WHERE lid = ?`, lid)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var src, dst string
+		if err := rows.Scan(&src, &dst); err != nil {
+			rows.Close()
+			return err
+		}
+		planned[src] = dst
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 	from := filepath.Join("store", strings.ReplaceAll(lid, ":", "_"))
 	to := filepath.Join("store", strings.ReplaceAll(pn, ":", "_"))
 	entries, err := os.ReadDir(from)
 	if os.IsNotExist(err) {
-		return nil
+		_, err = db.Exec(`DELETE FROM lid_media_moves WHERE lid = ?`, lid)
+		return err
 	} else if err != nil {
 		return err
 	}
@@ -158,7 +212,11 @@ func moveChatMedia(db *sql.DB, lid, pn string) error {
 	}
 	var kept int
 	for _, e := range entries {
-		dst := filepath.Join(to, mergedMediaName(db, pn, e.Name()))
+		name := e.Name()
+		if d, ok := planned[name]; ok && !strings.ContainsAny(d, `/\`) && d != ".." {
+			name = d
+		}
+		dst := filepath.Join(to, name)
 		if _, err := os.Lstat(dst); err == nil {
 			kept++
 			continue
@@ -170,29 +228,11 @@ func moveChatMedia(db *sql.DB, lid, pn string) error {
 	if kept > 0 {
 		return fmt.Errorf("%d file(s) already present under %s, left in %s", kept, to, from)
 	}
-	return os.Remove(from)
-}
-
-// mergedMediaName is the cache name for a moved file: <id>_<filename> of the row it belongs to in
-// the merged chat, or the name as is when no row claims it.
-func mergedMediaName(db *sql.DB, chat, name string) string {
-	for i := strings.Index(name, "_"); i > 0; i = nextUnderscore(name, i) {
-		var filename string
-		if db.QueryRow(`SELECT filename FROM messages WHERE chat_jid = ? AND id = ?`, chat, name[:i]).Scan(&filename) == nil {
-			if path, err := safeMediaPath(".", name[:i], filename); err == nil {
-				return filepath.Base(path)
-			}
-			return name
-		}
+	if err := os.Remove(from); err != nil {
+		return err
 	}
-	return name
-}
-
-func nextUnderscore(s string, after int) int {
-	if j := strings.Index(s[after+1:], "_"); j >= 0 {
-		return after + 1 + j
-	}
-	return -1
+	_, err = db.Exec(`DELETE FROM lid_media_moves WHERE lid = ?`, lid)
+	return err
 }
 
 func chatExists(db *sql.DB, jid string) bool {
@@ -219,6 +259,11 @@ func migrateLIDSenders(client *whatsmeow.Client, db *sql.DB) (int, error) {
 		pn, err := client.Store.LIDs.GetPNForLID(ctx, lid)
 		cancel()
 		if err != nil || pn.IsEmpty() {
+			if s == lid.String() {
+				if err := adoptLegacyLIDAuthor(db, lid.User, s); err != nil {
+					return rewritten, err
+				}
+			}
 			continue
 		}
 		if err := rewriteLIDAuthor(db, s, pn.User); err != nil {
@@ -227,6 +272,41 @@ func migrateLIDSenders(client *whatsmeow.Client, db *sql.DB) (int, error) {
 		rewritten++
 	}
 	return rewritten, nil
+}
+
+// adoptLegacyLIDAuthor gives rows stored before senderKey (a bare LID user) the LID key, in the
+// chats where that LID already appears, so one person is not counted twice while the phone
+// number is still unknown.
+func adoptLegacyLIDAuthor(db *sql.DB, bare, lid string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	inChats := `chat_jid IN (SELECT chat_jid FROM messages WHERE sender = ?2 UNION SELECT chat_jid FROM poll_votes WHERE voter = ?2)`
+	for _, q := range []string{
+		`UPDATE messages SET sender = ?2 WHERE sender = ?1 AND ` + inChats,
+		`DELETE FROM poll_votes AS o WHERE voter = ?1 AND EXISTS (SELECT 1 FROM poll_votes n
+			WHERE n.poll_id = o.poll_id AND n.chat_jid = o.chat_jid AND n.voter = ?2
+			AND julianday(n.timestamp) >= julianday(o.timestamp))`,
+		`UPDATE OR REPLACE poll_votes SET voter = ?2 WHERE voter = ?1 AND ` + inChats,
+	} {
+		if _, err := tx.Exec(q, bare, lid); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// dropLegacyVote removes an older vote that the same voter cast before senderKey, under the bare
+// LID user, so a live vote replaces it instead of counting twice.
+func dropLegacyVote(db *sql.DB, pollID, chatJID, voter string, at time.Time) error {
+	if !strings.HasSuffix(voter, "@"+types.HiddenUserServer) {
+		return nil
+	}
+	_, err := db.Exec(`DELETE FROM poll_votes WHERE poll_id = ? AND chat_jid = ? AND voter = ?
+		AND julianday(timestamp) <= julianday(?)`, pollID, chatJID, strings.TrimSuffix(voter, "@"+types.HiddenUserServer), at)
+	return err
 }
 
 // rewriteLIDAuthor moves one author to the phone number; of two votes on one poll, the newer stays.

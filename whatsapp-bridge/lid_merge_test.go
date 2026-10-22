@@ -301,3 +301,81 @@ func TestApplyEditMatchesLegacyBareLIDAuthor(t *testing.T) {
 		}
 	}
 }
+
+func TestLIDMediaMoveUsesExactPlanForPrefixIDs(t *testing.T) {
+	s := setupChatStore(t)
+	seedLIDPair(t, s)
+	mustExec(t, s, `INSERT INTO messages (id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename)
+		VALUES ('m1_x', ?, '222', '', ?, 0, 'audio', 'old.ogg')`, testLID, ts("2026-10-20T09:00:00Z"))
+	if err := os.WriteFile(filepath.Join("store", testLID, "m1_x_old.ogg"), []byte("other"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateLIDChats(lidClient(map[string]string{"999": "222"}), s, waLog.Noop)
+
+	for name, want := range map[string]string{"m1_pn.ogg": "audio", "m1_x_old.ogg": "other"} {
+		if got, err := os.ReadFile(filepath.Join("store", testPN, name)); err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
+func TestLIDMediaKeptWhenPlanUnreadable(t *testing.T) {
+	s := setupChatStore(t)
+	seedLIDPair(t, s)
+	if err := mergeLIDChat(s.db, testLID, testPN); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, s, `ALTER TABLE lid_media_moves RENAME TO lid_media_moves_gone`)
+
+	if err := moveChatMedia(s.db, testLID, testPN); err == nil {
+		t.Fatal("moved media without its plan")
+	}
+	if _, err := os.Stat(filepath.Join("store", testLID, "m1_a.ogg")); err != nil {
+		t.Errorf("LID media touched without a plan: %v", err)
+	}
+}
+
+func TestLegacyLIDVoterAdoptedBeforeNumberIsKnown(t *testing.T) {
+	s := setupChatStore(t)
+	const group, other = "123-456@g.us", "789-000@g.us"
+	mustExec(t, s, `INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES
+		('p1', ?, '777', '["old"]', ?), ('p1', ?, '777@lid', '["new"]', ?)`, group, time.Unix(100, 0), group, time.Unix(200, 0))
+	for _, c := range []string{group, other} {
+		if err := s.StoreChat(c, "Group", time.Unix(100, 0)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, m := range map[string]struct{ chat, sender string }{"a": {group, "777"}, "b": {other, "777"}} {
+		if err := s.StoreMessage(id, m.chat, m.sender, "x", time.Unix(100, 0), false, "", "", "", nil, nil, nil, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	migrateLIDChats(lidClient(nil), s, waLog.Noop)
+
+	if n := countRows(t, s, `SELECT COUNT(*) FROM poll_votes`); n != 1 {
+		t.Fatalf("%d votes, want the voter counted once", n)
+	}
+	if got, _ := pollVote(t, s, group, "777@lid"); got != `["new"]` {
+		t.Errorf("vote = %s, want the newer one", got)
+	}
+	for id, want := range map[string]string{"a": "777@lid", "b": "777"} {
+		var got string
+		if err := s.db.QueryRow(`SELECT sender FROM messages WHERE id = ?`, id).Scan(&got); err != nil || got != want {
+			t.Errorf("sender of %s = %q, %v; want %q (only chats where the LID appears)", id, got, err, want)
+		}
+	}
+}
+
+func TestLiveLIDVoteReplacesLegacyVote(t *testing.T) {
+	s := setupChatStore(t)
+	const group = "123-456@g.us"
+	mustExec(t, s, `INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES ('p1', ?, '777', '["old"]', ?)`, group, time.Unix(100, 0))
+	if err := dropLegacyVote(s.db, "p1", group, "777@lid", time.Unix(200, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if n := countRows(t, s, `SELECT COUNT(*) FROM poll_votes`); n != 0 {
+		t.Errorf("legacy vote kept next to the live one")
+	}
+}

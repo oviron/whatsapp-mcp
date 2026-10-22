@@ -6,7 +6,7 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 
 - **whatsmeow exige `context.Context`** em todas as chamadas de API (quebra que congelou o upstream). Versão pinada: `v0.0.0-20260516102357-8d3700152a69`. Go **1.25+** obrigatório (`go.mod`).
 - **REST API liga em `127.0.0.1` por padrão.** Upstream ligava `0.0.0.0` (qualquer um na LAN mandava mensagem como você). `BIND_ADDR=<ip>` (ex. `0.0.0.0`, ou um IP específico como um endereço Tailscale) reabre.
-- **Porta** via `WHATSAPP_BRIDGE_PORT` (default 8080; este setup usa 8081).
+- **Porta** via `WHATSAPP_BRIDGE_PORT` (default 8080).
 - **`API_AUTH_TOKEN`**: se `BIND_ADDR` não é `127.0.0.1`/`localhost`, o processo **recusa subir**
   sem essa env var setada (fail-closed, não fail-open). Quando setada, todo `/api/*` exige
   header `Authorization: Bearer <token>` (middleware `requireBearerToken`, aplicado só em
@@ -17,7 +17,7 @@ Bridge Go (`whatsapp-bridge/main.go`) — conecta ao WhatsApp via whatsmeow, exp
 - 9 endpoints somam-se aos de escrita já existentes: `/api/chats`, `/api/messages`,
   `/api/message_context`, `/api/contacts/search`, `/api/contacts/chats`,
   `/api/contacts/last_interaction`, `/api/chat`, `/api/chat/by_contact`, `/api/sender_name`.
-  Contrato completo em `.reversa/_reversa_forward/mcp-remote-hardening/interfaces.md`.
+  Contrato: os handlers em `whatsapp-bridge/main.go`.
 - Motivo de existirem: o MCP Python lia esses dados via SQLite local direto; isso só funciona
   quando MCP e bridge rodam na mesma máquina. Bridge remota (VPS) exige que essas leituras
   também sejam REST — MCP server hoje é 100% stateless (ver `mcp-python.md`).
@@ -65,7 +65,7 @@ Additive tables created in `NewMessageStore` (each feature owns its schema strin
 - `approveDraft` is the **only** path that sends a chase: it claims the draft (`written` -> `sending`) before `sendWhatsAppMessage` and sends exactly the text it receives. The "only after the owner decided" guard is prompt-level (docstring + `/whats:morning`); the server cannot prove a human saw the text. A failed send puts the draft back to pending.
 - The summary is a stored photograph per day (`summaries`); announcing a closure clears `announce_pending`.
 - WhatsApp Favorites are mirrored from `events.AppState` (index `favorites`); `EmitAppStateEventsOnFullSync` is off, so a list that existed before pairing is picked up on its next change.
-- Local checks run in a Go container (no Go on the Mac): mount the repo, `go vet ./... && go test ./...`; `gofmt` also rewrites `webhook.go` (known nit), do not commit that.
+- Local checks: `go vet ./... && go test ./...` (in a Go container with the repo mounted if Go isn't installed); `gofmt` also rewrites `webhook.go` (known nit), do not commit that.
 
 ## Deleting a chat (e2e cleanup)
 

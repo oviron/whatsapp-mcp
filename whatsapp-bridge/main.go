@@ -3987,7 +3987,7 @@ func main() {
 	supervisor := newConnectionSupervisor(client, logger, func() bool {
 		devices, err := container.GetAllDevices(context.Background())
 		return err == nil && len(devices) == 0
-	})
+	}, func() error { return client.Store.Delete(context.Background()) })
 	client.AddEventHandlerWithSuccessStatus(failOnPanic(logger, func(evt any) bool {
 		supervisor.handle(evt)
 		switch v := evt.(type) {
@@ -4080,8 +4080,15 @@ func main() {
 		case <-connected:
 			fmt.Println("\nSuccessfully connected and authenticated!")
 		case <-time.After(3 * time.Minute):
-			logger.Errorf("Timeout waiting for QR code scan")
-			os.Exit(1)
+			// A ban or a second client during pairing: wait it out, then restart for a fresh QR code.
+			// An outdated client cannot pair at all, so a restart would only repeat the refusal.
+			for supervisor.held() {
+				time.Sleep(time.Minute)
+			}
+			if !supervisor.isStopped() {
+				logger.Errorf("Timeout waiting for QR code scan")
+				os.Exit(1)
+			}
 		}
 	} else {
 		// Already logged in, just connect

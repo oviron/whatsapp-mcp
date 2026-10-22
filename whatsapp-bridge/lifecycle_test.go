@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ type supervisorHarness struct {
 	*connectionSupervisor
 	session *fakeSession
 	deleted bool
+	deletes []error // results of the supervisor's own delete attempts, in order
 	clock   time.Time
 	timers  []time.Duration
 	pending []func()
@@ -36,9 +38,17 @@ func newSupervisorHarness() *supervisorHarness {
 	h.connectionSupervisor = &connectionSupervisor{
 		session:        h.session,
 		sessionDeleted: func() bool { return h.deleted },
-		log:            waLog.Noop,
-		exit:           func(code int) { h.exited = append(h.exited, code) },
-		now:            func() time.Time { return h.clock },
+		deleteSession: func() error {
+			err := h.deletes[0]
+			h.deletes = h.deletes[1:]
+			if err == nil {
+				h.deleted = true
+			}
+			return err
+		},
+		log:  waLog.Noop,
+		exit: func(code int) { h.exited = append(h.exited, code) },
+		now:  func() time.Time { return h.clock },
 		after: func(d time.Duration, f func()) {
 			h.timers = append(h.timers, d)
 			h.pending = append(h.pending, f)
@@ -132,14 +142,49 @@ func TestLoggedOutExitsOnceSessionIsDeleted(t *testing.T) {
 	}
 }
 
-func TestLoggedOutExitsAfterTimeoutWithoutDeletion(t *testing.T) {
+func TestLoggedOutDeletesSessionItselfUntilItWorks(t *testing.T) {
 	h := newSupervisorHarness()
+	h.deletes = []error{errors.New("database is locked"), nil}
 	h.handle(&events.LoggedOut{Reason: events.ConnectFailureLoggedOut})
 	for len(h.exited) == 0 && len(h.timers) < 1000 {
 		h.fire()
 	}
-	if len(h.exited) != 1 || time.Duration(len(h.timers))*logoutPollInterval != logoutDeleteTimeout {
-		t.Fatalf("exits = %v after %d polls, want one exit after %v", h.exited, len(h.timers), logoutDeleteTimeout)
+	if len(h.exited) != 1 || !h.deleted || len(h.deletes) != 0 {
+		t.Fatalf("exits = %v, deleted = %v, delete attempts left = %d; want one exit after the second delete",
+			h.exited, h.deleted, len(h.deletes))
+	}
+	if polls := time.Duration(len(h.timers)) * logoutPollInterval; polls != 2*logoutDeleteTimeout {
+		t.Fatalf("exited after %v of polling, want %v", polls, 2*logoutDeleteTimeout)
+	}
+}
+
+func TestStoppedOrHeldDuringRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		evt           any
+		stopped, held bool
+	}{
+		"outdated":        {evt: &events.ClientOutdated{}, stopped: true},
+		"logged out":      {evt: &events.LoggedOut{}, stopped: true},
+		"ban":             {evt: &events.TemporaryBan{Expire: time.Minute}, held: true},
+		"stream replaced": {evt: &events.StreamReplaced{}, held: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newSupervisorHarness()
+			h.deleted = true
+			if h.isStopped() || h.held() {
+				t.Fatal("blocked before any refusal")
+			}
+			h.handle(tc.evt)
+			if h.isStopped() != tc.stopped || h.held() != tc.held {
+				t.Fatalf("stopped = %v, held = %v; want %v, %v", h.isStopped(), h.held(), tc.stopped, tc.held)
+			}
+			if tc.held {
+				h.clock = h.clock.Add(time.Hour)
+				if h.held() {
+					t.Fatal("still held after the pause; pairing would never get a fresh QR code")
+				}
+			}
+		})
 	}
 }
 
@@ -231,5 +276,21 @@ func TestHandleMessageReportsFailedWrites(t *testing.T) {
 				t.Fatalf("handleMessage = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestPollVoteReadFailureIsNotAcked(t *testing.T) {
+	vote := &events.Message{Message: &waProto.Message{PollUpdateMessage: &waProto.PollUpdateMessage{
+		PollCreationMessageKey: &waProto.MessageKey{ID: proto.String("p1")},
+	}}}
+	s := setupChatStore(t)
+	if !recordPollVote(&whatsmeow.Client{}, s, vote, "111@s.whatsapp.net", "222", waLog.Noop) {
+		t.Fatal("a vote on an untracked poll was reported as failed; whatsmeow would redeliver it forever")
+	}
+	if _, err := s.db.Exec(`ALTER TABLE polls RENAME TO polls_gone`); err != nil {
+		t.Fatal(err)
+	}
+	if recordPollVote(&whatsmeow.Client{}, s, vote, "111@s.whatsapp.net", "222", waLog.Noop) {
+		t.Fatal("a database failure was acked, dropping the vote")
 	}
 }

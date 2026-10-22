@@ -118,9 +118,12 @@ func optionsForHashes(options []string, hashes [][]byte) []string {
 func recordPollVote(client *whatsmeow.Client, store *MessageStore, msg *events.Message, chatJID, voter string, logger waLog.Logger) bool {
 	pollID := msg.Message.GetPollUpdateMessage().GetPollCreationMessageKey().GetID()
 	var optsJSON string
-	if err := store.db.QueryRow(`SELECT options FROM polls WHERE id = ? AND chat_jid = ?`, pollID, chatJID).Scan(&optsJSON); err != nil {
-		logger.Warnf("Poll vote from %s ignored: poll %s is not tracked in chat %s (%v)", voter, pollID, chatJID, err)
+	if err := store.db.QueryRow(`SELECT options FROM polls WHERE id = ? AND chat_jid = ?`, pollID, chatJID).Scan(&optsJSON); errors.Is(err, sql.ErrNoRows) {
+		logger.Warnf("Poll vote from %s ignored: poll %s is not tracked in chat %s", voter, pollID, chatJID)
 		return true
+	} else if err != nil {
+		logger.Warnf("Failed to read poll %s: %v", pollID, err)
+		return false
 	}
 	var options []string
 	if json.Unmarshal([]byte(optsJSON), &options) != nil {

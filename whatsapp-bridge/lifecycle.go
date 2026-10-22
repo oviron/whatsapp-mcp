@@ -37,6 +37,7 @@ func (c whatsmeowSession) IsPaired() bool { return c.Store.ID != nil }
 type connectionSupervisor struct {
 	session        sessionClient
 	sessionDeleted func() bool
+	deleteSession  func() error
 	log            waLog.Logger
 	exit           func(code int)
 	now            func() time.Time
@@ -49,10 +50,11 @@ type connectionSupervisor struct {
 	lastReplaced  time.Time
 }
 
-func newConnectionSupervisor(client *whatsmeow.Client, log waLog.Logger, sessionDeleted func() bool) *connectionSupervisor {
+func newConnectionSupervisor(client *whatsmeow.Client, log waLog.Logger, sessionDeleted func() bool, deleteSession func() error) *connectionSupervisor {
 	return &connectionSupervisor{
 		session:        whatsmeowSession{client},
 		sessionDeleted: sessionDeleted,
+		deleteSession:  deleteSession,
 		log:            log,
 		exit:           os.Exit,
 		now:            time.Now,
@@ -103,19 +105,38 @@ func (s *connectionSupervisor) handle(evt any) {
 	}
 }
 
-// exitAfterLogout waits for whatsmeow to delete the session, which it does only after dispatching
-// LoggedOut: exiting earlier restarts into the dead session instead of a QR code.
+// exitAfterLogout exits once the session is gone from the store: whatsmeow deletes it only after
+// dispatching LoggedOut, and a restart into the dead session would never show a QR code. If
+// whatsmeow's own delete failed, the supervisor deletes it, retrying until that works.
 func (s *connectionSupervisor) exitAfterLogout(waited time.Duration) {
 	if s.sessionDeleted() {
 		s.exit(1)
 		return
 	}
 	if waited >= logoutDeleteTimeout {
-		s.log.Errorf("The logged-out session is still in store/whatsapp.db after %v; exiting anyway", waited)
-		s.exit(1)
-		return
+		if err := s.deleteSession(); err == nil {
+			s.exit(1)
+			return
+		} else {
+			s.log.Errorf("Cannot remove the logged-out session from store/whatsapp.db: %v; retrying in %v", err, logoutDeleteTimeout)
+		}
+		waited = 0
 	}
 	s.after(logoutPollInterval, func() { s.exitAfterLogout(waited + logoutPollInterval) })
+}
+
+// isStopped reports a refusal only a person can lift (outdated client, logout).
+func (s *connectionSupervisor) isStopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopped
+}
+
+// held reports a pause that is still running (ban, a second client on the session).
+func (s *connectionSupervisor) held() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.now().Before(s.holdUntil)
 }
 
 // failOnPanic reports a panicking handler as failed: whatsmeow recovers the panic itself but then
@@ -133,10 +154,7 @@ func failOnPanic(log waLog.Logger, handler func(any) bool) func(any) bool {
 }
 
 func (s *connectionSupervisor) reconnect() {
-	s.mu.Lock()
-	blocked := s.stopped || s.now().Before(s.holdUntil)
-	s.mu.Unlock()
-	if blocked || !s.session.IsPaired() || s.session.IsConnected() {
+	if s.isStopped() || s.held() || !s.session.IsPaired() || s.session.IsConnected() {
 		return
 	}
 	s.log.Warnf("Paired but not connected to WhatsApp; reconnecting")

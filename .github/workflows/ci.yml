@@ -19,17 +19,27 @@ jobs:
       - name: Build, vet, test
         working-directory: whatsapp-bridge
         run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "run gofmt -w on the files above"; exit 1; }
           go build -o /tmp/wb .
           go vet ./...
           go test ./...
 
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # apt mirrors sometimes stall for good: bound each attempt and retry instead of hanging the job.
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 10
+        run: |
+          for attempt in 1 2 3; do
+            sudo timeout 180 apt-get update -o Acquire::Retries=3 &&
+              sudo timeout 180 apt-get install -y --no-install-recommends ffmpeg && exit 0
+            echo "ffmpeg install attempt $attempt failed"
+          done
+          exit 1
       - name: Unit tests
         working-directory: whatsapp-mcp-server
         run: uv run python -m unittest discover -p 'test_*.py'

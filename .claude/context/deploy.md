@@ -25,13 +25,12 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## Host Linux (VM de dev) vs macOS
 
-- Doc da seção launchd descreve o setup **macOS**. VMs Linux não têm launchd — a bridge roda
-  como **systemd system-service** lá (ex: `/etc/systemd/system/whatsapp-bridge-dev1.service`,
-  `Restart=always`, `RestartSec=5`, `WHATSAPP_BRIDGE_PORT` explícito, ExecStart = binário direto).
-- **Reiniciar sem sudo** (se não tiver root no host): `systemctl restart` exige root; workaround é
-  `kill <pid>` do processo `whatsapp-bridge` — systemd com `Restart=always` religa sozinho em
-  ~5s. Confirmar com `pgrep -f '/whatsapp-bridge$'`. `systemctl --user` falha nesse caso (unit é
-  system-scope, não user).
+- Doc da seção launchd descreve o setup **macOS**. Linux não tem launchd: `install.sh --service`
+  cria um **systemd user-service**; um host pode também rodar a bridge como system-service próprio
+  (unit com `Restart=always` e `WHATSAPP_BRIDGE_PORT` explícito).
+- **Reiniciar sem root** um system-service: `systemctl restart` exige root; com `Restart=always`
+  basta `kill <pid>` do processo `whatsapp-bridge` — o systemd religa sozinho. Confirmar com
+  `pgrep -f '/whatsapp-bridge$'`. `systemctl --user` não enxerga unit system-scope.
 - Engine de transcrição `local` (whisper.cpp) só funciona se o binário/modelo existirem *nesse*
   host — paths absolutos de outra máquina (ex: macOS) não existem lá. Nesse caso usar engine
   `api` (Groq/OpenAI) via `transcription.env`/`transcription.systemd.env` (EnvironmentFile do
@@ -44,7 +43,7 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 - Agent: `~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`. **`RunAtLoad=true` + `KeepAlive=true`** (arranca no login, reinicia se cair, ThrottleInterval 10s).
 - Aponta pro `whatsapp-bridge/` do clone de onde a bridge roda (o install.sh usa `~/.whatsapp-mcp`). Executa `start-bridge.sh`.
-- **launchd NÃO herda `export` do shell** → env de transcrição vem de `transcription.env` (sourced por start-bridge.sh). Plist seta `WHATSAPP_BRIDGE_LOG` → `bridge.log`.
+- **launchd NÃO herda `export` do shell** → env de transcrição vem de `transcription.env` (sourced por start-bridge.sh). O plist gerado não seta `WHATSAPP_BRIDGE_LOG`; pra log em arquivo, adicionar a variável no plist ou no `transcription.env`.
 - Controle:
   - Parar: `launchctl bootout gui/$(id -u)/com.whatsapp-mcp.bridge`
   - Iniciar: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`

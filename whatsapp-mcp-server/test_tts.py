@@ -245,7 +245,7 @@ class TestApiEngine(TTSTestCase):
                         tts.synthesize("Olá")
         self.assertIn("502", str(cm.exception))
         self.assertNotIn("secret-proxy-header", str(cm.exception))
-        self.assertIn("secret-proxy-header", "".join(logs.output))
+        self.assertNotIn("secret-proxy-header", "".join(logs.output))
         self.assertNoLeftovers()
 
     def test_api_without_key_is_not_configured(self):

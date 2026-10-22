@@ -137,7 +137,7 @@ def _synthesize_api(text, tmpdir):
         # The body can echo the (masked) key, so it is deliberately left out.
         raise TTSError(f"TTS API rejected the credentials (HTTP {r.status_code}); check TTS_API_KEY")
     if r.status_code != 200:
-        log.error("TTS API returned HTTP %s: %s", r.status_code, r.text[:200])
+        log.error("TTS API returned HTTP %s", r.status_code)
         raise TTSError(f"TTS API returned an error (HTTP {r.status_code})")
     if not r.content:
         raise TTSError("TTS API returned no audio")

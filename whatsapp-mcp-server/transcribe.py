@@ -32,6 +32,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from private_logs import redact_urls
+
 # WhatsApp purges undelivered media from its CDN after roughly 2-3 weeks. An
 # audio is marked unavailable only when the bridge says the CDN no longer has
 # it (reason "media_gone") and it is older than this; a younger one may still
@@ -110,7 +112,9 @@ SENTINEL_EMPTY = "[áudio sem transcrição]"
 SENTINEL_UNAVAILABLE = "[áudio indisponível: mídia expirada no servidor]"
 
 
-def log(msg):
+def log(msg, content=None):
+    if content is not None and os.environ.get("WHATSAPP_LOG_CONTENT", "").strip().lower() in ("1", "true", "yes", "on"):
+        msg += f" content={content!r}"
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
@@ -336,13 +340,14 @@ def main():
     done = empty = unavailable = mismatch = failed = 0
 
     for i, (msg_id, chat_jid, exp_sha, file_length, ts) in enumerate(rows, 1):
-        prefix = f"[{i}/{total}] {msg_id[:12]}"
+        prefix = f"[{i}/{total}] id={msg_id[:12]} chat={chat_jid!r} type=audio"
         try:
             path = cached_audio(msg_id, chat_jid, exp_sha, file_length)
             dl_err = dl_reason = None
             if not path:
                 path, dl_err, dl_reason = download(msg_id, chat_jid)
             if not path or not os.path.isfile(path):
+                dl_err = redact_urls(dl_err)
                 # Fresh media can still recover through media retry.
                 if dl_reason == "media_gone" and _is_expired(ts):
                     write_content(msg_id, chat_jid, SENTINEL_UNAVAILABLE)
@@ -362,7 +367,7 @@ def main():
             if text:
                 write_content(msg_id, chat_jid, text)
                 done += 1
-                log(f"{prefix} ok ({len(text)} chars): {text[:60]}...")
+                log(f"{prefix} ok ({len(text)} chars)", content=text)
             else:
                 write_content(msg_id, chat_jid, SENTINEL_EMPTY)
                 empty += 1

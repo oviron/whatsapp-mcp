@@ -87,7 +87,7 @@ func writeMediaFile(path string, length uint64, hash []byte, download func(whats
 	defer os.Remove(file.Name())
 	defer file.Close()
 	if err := download(attemptFile{file}); err != nil {
-		return err
+		return redactURLErr(err)
 	}
 	if err := file.Close(); err != nil {
 		return err

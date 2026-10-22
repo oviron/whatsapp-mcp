@@ -23,6 +23,31 @@ type fakeMessageActions struct {
 	message      *waProto.Message
 	builds, sent int
 	sendErr      error
+	group        types.GroupInfo
+	lids         fakeLIDs
+}
+
+// fakeLIDs is the LID <-> number store; only the two lookups are used.
+type fakeLIDs struct {
+	store.LIDStore
+	pairs map[types.JID]types.JID // number -> LID
+}
+
+func (f fakeLIDs) GetLIDForPN(_ context.Context, pn types.JID) (types.JID, error) {
+	return f.pairs[pn], nil
+}
+
+func (f fakeLIDs) GetPNForLID(_ context.Context, lid types.JID) (types.JID, error) {
+	for pn, l := range f.pairs {
+		if l == lid {
+			return pn, nil
+		}
+	}
+	return types.EmptyJID, nil
+}
+
+func (f *fakeMessageActions) GroupAuthor(ctx context.Context, _ types.JID, author types.JID) (types.JID, error) {
+	return groupActionAuthor(ctx, &f.group, author, f.lids), nil
 }
 
 func newFakeMessageActions() *fakeMessageActions {
@@ -189,5 +214,48 @@ func TestGroupMessageActionSendError(t *testing.T) {
 				t.Errorf("failed send changed local content to %q", content)
 			}
 		})
+	}
+}
+
+func TestGroupActionAuthorFollowsAddressing(t *testing.T) {
+	pn, lid := types.NewJID("222", types.DefaultUserServer), types.NewJID("333", types.HiddenUserServer)
+	lids := fakeLIDs{pairs: map[types.JID]types.JID{pn: lid}}
+	for _, c := range []struct {
+		name   string
+		group  types.GroupInfo
+		author types.JID
+		want   types.JID
+	}{
+		{"LID group member stored by number", types.GroupInfo{AddressingMode: types.AddressingModeLID,
+			Participants: []types.GroupParticipant{{JID: lid, LID: lid, PhoneNumber: pn}}}, pn, lid},
+		{"LID group former member", types.GroupInfo{AddressingMode: types.AddressingModeLID}, pn, lid},
+		{"number group member stored by LID", types.GroupInfo{AddressingMode: types.AddressingModePN,
+			Participants: []types.GroupParticipant{{JID: pn, LID: lid, PhoneNumber: pn}}}, lid, pn},
+		{"number group former member", types.GroupInfo{AddressingMode: types.AddressingModePN}, lid, pn},
+		{"unknown mapping keeps the stored author", types.GroupInfo{AddressingMode: types.AddressingModeLID}, types.NewJID("444", types.DefaultUserServer), types.NewJID("444", types.DefaultUserServer)},
+	} {
+		if got := groupActionAuthor(context.Background(), &c.group, c.author, lids); got != c.want {
+			t.Errorf("%s: %s, want %s", c.name, got, c.want)
+		}
+	}
+
+	// Through the handler: the key carries the LID although messages.sender holds the number.
+	for _, action := range []string{"react", "revoke"} {
+		s := setupChatStore(t)
+		seedActionMessage(t, s, "target", "123@g.us", "222", "original", false)
+		client := newFakeMessageActions()
+		client.group = types.GroupInfo{AddressingMode: types.AddressingModeLID}
+		client.lids = lids
+		body, _ := json.Marshal(ReactRequest{ChatJID: "123@g.us", MessageID: "target", Emoji: "👍"})
+		if rec := doHandlerRequest(t, groupActionHandler(action, client, s), http.MethodPost, body); rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", action, rec.Code, rec.Body.String())
+		}
+		key := client.message.GetReactionMessage().GetKey()
+		if action == "revoke" {
+			key = client.message.GetProtocolMessage().GetKey()
+		}
+		if key.GetParticipant() != "333@lid" {
+			t.Errorf("%s: participant %q, want 333@lid", action, key.GetParticipant())
+		}
 	}
 }

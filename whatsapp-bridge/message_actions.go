@@ -10,6 +10,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -20,6 +21,7 @@ type messageActionClient interface {
 	BuildReaction(types.JID, types.JID, types.MessageID, string) *waProto.Message
 	BuildRevoke(types.JID, types.JID, types.MessageID) *waProto.Message
 	SendMessage(context.Context, types.JID, *waProto.Message, ...whatsmeow.SendRequestExtra) (whatsmeow.SendResponse, error)
+	GroupAuthor(ctx context.Context, group, author types.JID) (types.JID, error)
 }
 
 type whatsmeowActions struct{ *whatsmeow.Client }
@@ -33,6 +35,37 @@ func (c whatsmeowActions) OwnID() *types.JID {
 
 func (c whatsmeowActions) NormalizeChat(chat types.JID) types.JID {
 	return resolveToPN(c.Client, chat)
+}
+
+func (c whatsmeowActions) GroupAuthor(ctx context.Context, group, author types.JID) (types.JID, error) {
+	info, err := c.GetGroupInfo(ctx, group)
+	if err != nil {
+		return types.EmptyJID, fmt.Errorf("failed to read the group's addressing: %w", err)
+	}
+	return groupActionAuthor(ctx, info, author, c.Store.LIDs), nil
+}
+
+// groupActionAuthor names the author the way the group addresses its members. A LID group needs the
+// author's LID in the message key (messages.sender usually holds the number), or WhatsApp drops the
+// reaction or revoke silently (whatsmeow#1071).
+func groupActionAuthor(ctx context.Context, info *types.GroupInfo, author types.JID, lids store.LIDStore) types.JID {
+	for _, p := range info.Participants {
+		if p.JID == author || p.LID == author || p.PhoneNumber == author {
+			return p.JID
+		}
+	}
+	// A former member: map through the stored LID <-> number pairs.
+	var mapped types.JID
+	var err error
+	if info.AddressingMode == types.AddressingModeLID && author.Server == types.DefaultUserServer {
+		mapped, err = lids.GetLIDForPN(ctx, author)
+	} else if info.AddressingMode != types.AddressingModeLID && author.Server == types.HiddenUserServer {
+		mapped, err = lids.GetPNForLID(ctx, author)
+	}
+	if err != nil || mapped.IsEmpty() {
+		return author
+	}
+	return mapped
 }
 
 func groupMessageSender(store *MessageStore, chat types.JID, id string) (types.JID, error) {

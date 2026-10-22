@@ -1012,6 +1012,11 @@ func handleReact(client messageActionClient, messageStore *MessageStore) http.Ha
 		}
 		if req.FromMe {
 			senderJID = actionSenderJID(client.OwnID(), chatJID, true)
+		} else if chatJID.Server == types.GroupServer {
+			if senderJID, err = client.GroupAuthor(context.Background(), chatJID, senderJID); err != nil {
+				writeActionError(w, err)
+				return
+			}
 		}
 		builtMsg := client.BuildReaction(chatJID, senderJID, types.MessageID(req.MessageID), req.Emoji)
 		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {
@@ -1121,6 +1126,11 @@ func handleRevoke(client messageActionClient, messageStore *MessageStore) http.H
 		}
 		if req.FromMe {
 			senderJID = actionSenderJID(client.OwnID(), chatJID, true)
+		} else if chatJID.Server == types.GroupServer {
+			if senderJID, err = client.GroupAuthor(context.Background(), chatJID, senderJID); err != nil {
+				writeActionError(w, err)
+				return
+			}
 		}
 		builtMsg := client.BuildRevoke(chatJID, senderJID, types.MessageID(req.MessageID))
 		if _, err := client.SendMessage(context.Background(), chatJID, builtMsg); err != nil {

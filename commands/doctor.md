@@ -6,7 +6,7 @@ Diagnose the WhatsApp MCP setup. Read-only — never restart services, rewrite c
 
 ## 1. Enumerate configured accounts
 
-Read `~/.claude.json`, list every `mcpServers` key starting with `whatsapp`. For each, extract `command`, `args` (the `--directory` value), and `env` (`WHATSAPP_API_BASE_URL`, `WHATSAPP_BRIDGE_PORT`, `WHATSAPP_API_AUTH_TOKEN` if present). The server's base URL is `WHATSAPP_API_BASE_URL` if set, else `http://localhost:<WHATSAPP_BRIDGE_PORT, default 8080>/api`; use that as `<WHATSAPP_API_BASE_URL>` below.
+Read `~/.claude.json`, list every `mcpServers` key starting with `whatsapp`. For each, extract `command`, `args` (the `--directory` value), and `env` (`WHATSAPP_API_BASE_URL`, `WHATSAPP_API_AUTH_TOKEN` if present). The server's base URL is `WHATSAPP_API_BASE_URL` if set, else `http://localhost:8080/api`; use that as `<WHATSAPP_API_BASE_URL>` below.
 
 No `whatsapp*` keys found → report "No WhatsApp MCP server configured — run `/whats:setup`" and stop here.
 

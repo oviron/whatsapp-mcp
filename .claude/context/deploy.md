@@ -46,7 +46,7 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 - Agent: `~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`. **`RunAtLoad=true` + `KeepAlive=true`** (arranca no login, reinicia se cair, ThrottleInterval 10s).
 - Roda do clone real `/Users/rodrigo/git/whatsapp-mcp/whatsapp-bridge` (NÃO de `~/.whatsapp-mcp`). Executa `start-bridge.sh`.
-- **launchd NÃO herda `export` do shell** → env de transcrição vem de `transcription.env` (sourced por start-bridge.sh). O plist gerado não seta `WHATSAPP_BRIDGE_LOG`; pra log em arquivo, adicionar a variável no plist ou no `transcription.env`.
+- **launchd NÃO herda `export` do shell** → env de transcrição vem de `transcription.env` (sourced por start-bridge.sh). O plist gerado manda stdout/stderr pra `<INSTALL_DIR>/bridge.log`. `WHATSAPP_BRIDGE_LOG` a bridge não lê: é do `recover_audios.py`, que lê esse arquivo.
 - Controle:
   - Parar: `launchctl bootout gui/$(id -u)/com.whatsapp-mcp.bridge`
   - Iniciar: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`

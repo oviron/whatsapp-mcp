@@ -353,13 +353,14 @@ type SendMessageResponse struct {
 
 // SendMessageRequest represents the request body for the send message API
 type SendMessageRequest struct {
-	Recipient string `json:"recipient"`
-	Message   string `json:"message"`
-	MediaPath string `json:"media_path,omitempty"`
+	Recipient        string `json:"recipient"`
+	Message          string `json:"message"`
+	MediaPath        string `json:"media_path,omitempty"`
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
 }
 
 // Function to send a WhatsApp message
-func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
+func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
 	}
@@ -518,6 +519,11 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 				FileSHA256:    resp.FileSHA256,
 				FileLength:    &resp.FileLength,
 			}
+		}
+	} else if replyTo != "" {
+		msg, err = quotedReply(messageStore, resolveToPN(client, recipientJID).String(), recipientJID.String(), replyTo, message)
+		if err != nil {
+			return false, err.Error()
 		}
 	} else {
 		msg.Conversation = proto.String(message)
@@ -3186,10 +3192,15 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			return
 		}
 
+		if req.ReplyToMessageID != "" && req.MediaPath != "" {
+			http.Error(w, "reply_to_message_id is only supported for text messages", http.StatusBadRequest)
+			return
+		}
+
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
 
 		// Send the message
-		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath)
+		success, message := sendWhatsAppMessage(client, messageStore, req.Recipient, req.Message, req.MediaPath, req.ReplyToMessageID)
 		fmt.Println("Message sent", success, message)
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")

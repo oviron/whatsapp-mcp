@@ -434,7 +434,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> Optional[Chat]:
 
     return _chat_from_dict(chat_data)
 
-def send_message(recipient: str, message: str) -> Tuple[bool, str]:
+def send_message(recipient: str, message: str, reply_to_message_id: str = "") -> Tuple[bool, str]:
     try:
         # Validate input
         if not recipient:
@@ -445,6 +445,8 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "recipient": recipient,
             "message": message,
         }
+        if reply_to_message_id:
+            payload["reply_to_message_id"] = reply_to_message_id
 
         response = requests.post(url, json=payload, headers=_auth_headers(), timeout=SEND_TIMEOUT)
 

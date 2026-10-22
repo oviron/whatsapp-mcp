@@ -66,7 +66,7 @@ It connects to your **personal WhatsApp account** directly via the WhatsApp web 
 - **PNG QR fallback** — QR code is saved to `/tmp/whatsapp-qr.png` and opened automatically on macOS if the terminal rendering is hard to scan.
 
 ### Security
-- **REST API bound to `127.0.0.1` by default** — the upstream bound to `0.0.0.0`, meaning anyone on the same LAN could send messages as you. Set `BIND_ADDR=<ip>` to opt into wider exposure (`0.0.0.0`, or a specific interface like a Tailscale address). If `BIND_ADDR` is not loopback, `API_AUTH_TOKEN` becomes mandatory — the bridge refuses to start without it, and every `/api/*` request must send `Authorization: Bearer <token>`. `GET /healthz` (connected yes/no, nothing else) and `/qr` stay open without a token.
+- **REST API bound to `127.0.0.1` by default** — the upstream bound to `0.0.0.0`, meaning anyone on the same LAN could send messages as you. Set `BIND_ADDR=<ip>` to opt into wider exposure (`0.0.0.0`, or a specific interface like a Tailscale address). If `BIND_ADDR` is not loopback, `API_AUTH_TOKEN` becomes mandatory — the bridge refuses to start without it, and every `/api/*` request must send `Authorization: Bearer <token>`. `GET /healthz` (connected yes/no, nothing else) and `/qr` stay open without a token. Without a token (loopback), `/api/*` refuses requests that carry an `Origin` header or a `Host` other than loopback/`BIND_ADDR`, so a web page in your browser cannot reach it (cross-site POST or DNS rebinding). The bridge exits if it cannot bind its port.
 
 ### Contact name resolution (LID migration)
 WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.net`) to internal LID JIDs (`xxx@lid`) for privacy. This broke contact search, `get_direct_chat_by_contact`, and `list_messages` in the upstream. Fixed with:
@@ -176,6 +176,7 @@ The voice model is never part of this repo. For Brazilian Portuguese, [`rhasspy/
 - `WHATSAPP_API_AUTH_TOKEN` env var — bearer token the MCP server sends as `Authorization: Bearer <token>`; required if the bridge's `API_AUTH_TOKEN` is set
 - `BIND_ADDR` env var — change the bind address of the REST API (see [Security](#security) above for the auth requirement this triggers)
 - `API_AUTH_TOKEN` env var (bridge) — bearer token required on all `/api/*` requests once `BIND_ADDR` is non-loopback
+- `API_READONLY=true` env var (bridge) — `/api/*` serves only reads (messages, chats, contacts, groups, matters, media download); sending, editing, reactions, group changes and marking read get 403. Pair it with `MCP_READONLY=true` for an agent that must not act as you
 - Transcription env vars — see [Audio transcription](#audio-transcription-opt-in) above
 - `WEBHOOK_URL` / `WEBHOOK_SECRET` env vars — opt-in outbound webhooks, see [Webhooks](#webhooks-opt-in) below
 

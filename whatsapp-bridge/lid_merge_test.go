@@ -368,14 +368,40 @@ func TestLegacyLIDVoterAdoptedBeforeNumberIsKnown(t *testing.T) {
 	}
 }
 
-func TestLiveLIDVoteReplacesLegacyVote(t *testing.T) {
+func TestLiveLIDVoteMergesWithLegacyVote(t *testing.T) {
+	const group = "123-456@g.us"
+	for name, tc := range map[string]struct {
+		legacyAt, liveAt int64
+		want             string
+	}{
+		"live vote newer":   {legacyAt: 100, liveAt: 200, want: `["live"]`},
+		"live vote delayed": {legacyAt: 300, liveAt: 200, want: `["old"]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := setupChatStore(t)
+			mustExec(t, s, `INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES ('p1', ?, '777', '["old"]', ?)`, group, time.Unix(tc.legacyAt, 0))
+			if err := storePollVote(s.db, "p1", group, "777@lid", `["live"]`, time.Unix(tc.liveAt, 0)); err != nil {
+				t.Fatal(err)
+			}
+			if n := countRows(t, s, `SELECT COUNT(*) FROM poll_votes`); n != 1 {
+				t.Fatalf("%d votes, want the voter counted once", n)
+			}
+			if got, _ := pollVote(t, s, group, "777@lid"); got != tc.want {
+				t.Errorf("vote = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPollVoteKeptWhenStoringFails(t *testing.T) {
 	s := setupChatStore(t)
 	const group = "123-456@g.us"
 	mustExec(t, s, `INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES ('p1', ?, '777', '["old"]', ?)`, group, time.Unix(100, 0))
-	if err := dropLegacyVote(s.db, "p1", group, "777@lid", time.Unix(200, 0)); err != nil {
-		t.Fatal(err)
+	mustExec(t, s, `CREATE TRIGGER fail_vote BEFORE INSERT ON poll_votes BEGIN SELECT RAISE(FAIL, 'test failure'); END`)
+	if err := storePollVote(s.db, "p1", group, "777@lid", `["live"]`, time.Unix(200, 0)); err == nil {
+		t.Fatal("failure not reported")
 	}
-	if n := countRows(t, s, `SELECT COUNT(*) FROM poll_votes`); n != 0 {
-		t.Errorf("legacy vote kept next to the live one")
+	if got, _ := pollVote(t, s, group, "777"); got != `["old"]` {
+		t.Errorf("stored vote = %s after a failed write, want it untouched", got)
 	}
 }

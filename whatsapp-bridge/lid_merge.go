@@ -298,15 +298,34 @@ func adoptLegacyLIDAuthor(db *sql.DB, bare, lid string) error {
 	return tx.Commit()
 }
 
-// dropLegacyVote removes an older vote that the same voter cast before senderKey, under the bare
-// LID user, so a live vote replaces it instead of counting twice.
-func dropLegacyVote(db *sql.DB, pollID, chatJID, voter string, at time.Time) error {
-	if !strings.HasSuffix(voter, "@"+types.HiddenUserServer) {
-		return nil
+// storePollVote keeps one vote per voter on a poll, the newest by its own timestamp, so a
+// delayed older vote never replaces a newer one. A vote stored before senderKey under the bare LID
+// user belongs to the same voter as the LID key: the two merge first, in the same transaction.
+func storePollVote(db *sql.DB, pollID, chatJID, voter, selected string, at time.Time) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
 	}
-	_, err := db.Exec(`DELETE FROM poll_votes WHERE poll_id = ? AND chat_jid = ? AND voter = ?
-		AND julianday(timestamp) <= julianday(?)`, pollID, chatJID, strings.TrimSuffix(voter, "@"+types.HiddenUserServer), at)
-	return err
+	defer tx.Rollback()
+	if legacy := strings.TrimSuffix(voter, "@"+types.HiddenUserServer); legacy != voter {
+		for _, q := range []string{
+			`DELETE FROM poll_votes AS o WHERE poll_id = ?1 AND chat_jid = ?2 AND voter = ?3 AND EXISTS (
+				SELECT 1 FROM poll_votes n WHERE n.poll_id = ?1 AND n.chat_jid = ?2 AND n.voter = ?4
+				AND julianday(n.timestamp) >= julianday(o.timestamp))`,
+			`UPDATE OR REPLACE poll_votes SET voter = ?4 WHERE poll_id = ?1 AND chat_jid = ?2 AND voter = ?3`,
+		} {
+			if _, err := tx.Exec(q, pollID, chatJID, legacy, voter); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO poll_votes (poll_id, chat_jid, voter, selected, timestamp) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(poll_id, chat_jid, voter) DO UPDATE SET selected = excluded.selected, timestamp = excluded.timestamp
+		WHERE julianday(excluded.timestamp) >= julianday(poll_votes.timestamp)`,
+		pollID, chatJID, voter, selected, at); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // rewriteLIDAuthor moves one author to the phone number; of two votes on one poll, the newer stays.

@@ -27,7 +27,8 @@ func TestBatchMessageContextScaling(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer stmt.Close()
-			spacing := size / 20
+			const matches = 400
+			spacing := size / matches
 			for i := 0; i < size; i++ {
 				content := "ordinary"
 				if i%spacing == spacing/2 {
@@ -47,7 +48,7 @@ func TestBatchMessageContextScaling(t *testing.T) {
 			defer db.Close()
 			db.SetMaxOpenConns(1)
 			filtered := []string{}
-			for i := size - spacing/2; i > 0; i -= spacing {
+			for i := size - spacing + spacing/2; i > 0; i -= spacing {
 				filtered = append(filtered, fmt.Sprint(i-1), fmt.Sprint(i), fmt.Sprint(i+1))
 			}
 			page := []string{fmt.Sprint(size - 22), fmt.Sprint(size - 21), fmt.Sprint(size - 20)}
@@ -60,7 +61,7 @@ func TestBatchMessageContextScaling(t *testing.T) {
 				want []string
 			}{
 				{"all chats", MessagesRequest{Limit: 20, Page: 1}, page},
-				{"filtered chat", MessagesRequest{ChatJID: &chat, Query: strp("needle"), Limit: 20}, filtered},
+				{"filtered chat", MessagesRequest{ChatJID: &chat, Query: strp("needle"), Limit: matches}, filtered},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					tc.req.IncludeContext, tc.req.ContextBefore, tc.req.ContextAfter = true, 1, 1
@@ -73,9 +74,9 @@ func TestBatchMessageContextScaling(t *testing.T) {
 					if !reflect.DeepEqual(readIDs(got.Messages), tc.want) {
 						t.Fatalf("context IDs = %v, want %v", readIDs(got.Messages), tc.want)
 					}
-					t.Logf("%d messages, 20 matches, context ±1: %s", size, elapsed)
-					if elapsed >= 500*time.Millisecond {
-						t.Fatalf("context expansion took %s, want < 500ms", elapsed)
+					t.Logf("%d messages, %d matches, context ±1: %s", size, tc.req.Limit, elapsed)
+					if elapsed >= 250*time.Millisecond {
+						t.Fatalf("context expansion took %s, want < 250ms", elapsed)
 					}
 				})
 			}

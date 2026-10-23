@@ -2797,10 +2797,12 @@ func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (Messa
 					SELECT messages.timestamp, messages.sender, chats.name, messages.content,
 						messages.is_from_me, chats.jid, messages.id, messages.media_type
 					FROM messages JOIN chats ON chats.jid = messages.chat_jid
-					WHERE messages.chat_jid = ? AND (julianday(messages.timestamp), messages.rowid) `+side.op+`
-						(SELECT julianday(timestamp), rowid FROM messages WHERE id = ? AND chat_jid = ?)
+					WHERE messages.chat_jid = ?1 AND julianday(messages.timestamp) `+side.op+`=
+						(SELECT julianday(timestamp) FROM messages WHERE id = ?2 AND chat_jid = ?1)
+						AND (julianday(messages.timestamp), messages.rowid) `+side.op+`
+						(SELECT julianday(timestamp), rowid FROM messages WHERE id = ?2 AND chat_jid = ?1)
 					ORDER BY julianday(messages.timestamp) `+side.order+`, messages.rowid `+side.order+`
-					LIMIT ?`, target.ChatJID, target.ID, target.ChatJID, side.limit)
+					LIMIT ?3`, target.ChatJID, target.ID, side.limit)
 				if err != nil {
 					return MessagesResponse{}, err
 				}

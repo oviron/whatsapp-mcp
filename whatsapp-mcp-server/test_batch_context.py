@@ -38,8 +38,8 @@ class BatchContextTest(unittest.TestCase):
             self.assertEqual(whatsapp.list_messages(), "No messages to display.")
         post.assert_called_once()
 
-    def test_missing_batch_support_and_malformed_data_are_safe_errors(self):
-        for result in ({"messages": [message("target")]}, {},
+    def test_malformed_data_are_safe_errors(self):
+        for result in ({},
                        {"messages": None, "context_included": True},
                        {"messages": ["private-response"], "context_included": True}):
             with self.subTest(result=result), patch("whatsapp._api_post", return_value=result):

@@ -1040,7 +1040,24 @@ def update_group_settings(
             payload[key] = val
     if len(payload) == 1:
         return False, "at least one of name, topic, announce, locked is required"
-    ok, msg, _ = _group_action("POST", "/group_settings", json=payload)
+    try:
+        response = _api_request("POST", "/group_settings", json=payload)
+        try:
+            result = _bridge_result(response, require_success=True)
+            ok, msg = True, "Group settings updated"
+        except BridgeError as e:
+            ok, msg = False, str(e)
+            try:
+                result = response.json()
+            except ValueError:
+                result = {}
+    except BridgeError as e:
+        return False, str(e)
+    if isinstance(result, dict) and "applied" in result:
+        applied = result["applied"]
+        fields = [key for key in ("name", "topic", "announce", "locked")
+                  if isinstance(applied, list) and key in applied]
+        msg += f"; applied fields: {', '.join(fields) or 'none'}"
     return ok, msg
 
 

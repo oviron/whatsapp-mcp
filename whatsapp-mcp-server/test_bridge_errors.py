@@ -12,7 +12,7 @@ import whatsapp
 from test_mcp_modes import load_main
 
 
-SECRET = "/private/secret https://bridge.invalid/api PRIVATE_MESSAGE"
+SECRET = "PRIVATE_MESSAGE"
 
 
 def response(status=200, body=None):
@@ -188,9 +188,11 @@ class BridgeResponseContract(unittest.TestCase):
 
 class BridgeInputErrors(unittest.TestCase):
     def test_bridge_input_error_reaches_the_agent_without_paths(self):
+        author_error = ("the author is no longer in the group and the bridge does not know their address in it, "
+                        "so WhatsApp would drop this action")
         cases = (
-            (400, {"success": False, "message": "the author is no longer in the group"}, "the author is no longer in the group"),
-            (404, {"error": "message not found"}, "message not found"),
+            (400, {"success": False, "message": author_error}, author_error),
+            (404, {"error": "poll not found in the local database"}, "poll not found in the local database"),
             (400, {"message": "open /private/secret: no such file"}, "Invalid bridge request"),
             (400, {"message": "C:\\Users\\secret"}, "Invalid bridge request"),
             (400, {"message": "x" * 301}, "Invalid bridge request"),

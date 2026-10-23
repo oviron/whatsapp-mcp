@@ -26,8 +26,9 @@ class ChatBackfillTest(unittest.TestCase):
                 post.assert_not_called()
 
     def test_bridge_errors_reach_the_caller(self):
+        no_history = "No stored messages for this chat; cannot request earlier history"
         for status, body, expected in [
-                (404, {"error": "No stored messages for this chat"}, "No stored messages for this chat (HTTP 404)"),
+                (404, {"error": no_history}, no_history + " (HTTP 404)"),
                 (500, {"error": "Failed to request chat history from phone: timed out"}, "HTTP 500"),
                 (401, {}, "HTTP 401"),
                 (200, {"success": False, "message": "refused"}, "operation failed"),

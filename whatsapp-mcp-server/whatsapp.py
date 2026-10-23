@@ -29,6 +29,76 @@ SEND_TIMEOUT = 120
 # Media is uploaded or downloaded inside the same request.
 MEDIA_TIMEOUT = 300
 
+# Only literal REST errors from the Go handlers and their validators are public.
+# Formatted errors can contain stored messages, names or host paths.
+_PUBLIC_BRIDGE_ERRORS = {
+    "Forbidden: browser requests and foreign Host headers are refused without API_AUTH_TOKEN",
+    "Forbidden: the bridge runs with API_READONLY=true",
+    "Group name is required",
+    "Group name must be 25 characters or fewer",
+    "Invalid JID",
+    "Invalid action: must be one of add, remove, promote, demote",
+    "Invalid group_jid: must be a @g.us JID",
+    "Invalid invite link or code",
+    'Invalid media: must be one of "", audio',
+    "Invalid participant: empty string",
+    "Invalid request format",
+    "Invalid request: archive (true|false) required",
+    "Invalid request: at least one of name, topic, announce, locked required",
+    "Invalid request: chat_jid and message_id required",
+    "Invalid request: chat_jid is required",
+    "Invalid request: chat_jid required",
+    "Invalid request: chat_jid, message_id and options required",
+    "Invalid request: chat_jid, question and options required",
+    "Invalid request: group_jid and participants required",
+    "Invalid request: group_jid required",
+    "Invalid request: link required",
+    "Invalid request: new_text must not be empty",
+    "Invalid request: phones required",
+    "Invalid state: must be one of composing, paused",
+    "Message ID and Chat JID are required",
+    "Message or media path is required",
+    "Method not allowed",
+    "No stored messages for this chat; cannot request earlier history",
+    "No valid participants after parsing",
+    "QR not available",
+    "Recipient is required",
+    "a message from the owner never closes a matter",
+    "as_of is required: an ISO-8601 instant with offset, e.g. 2026-10-12T07:00:00-03:00",
+    "by must be confirmed|owner",
+    "certainty must be clear|uncertain",
+    "chat_jid and expect_name_prefix are required",
+    "chat_jid is required",
+    "chat_jid must be a user or group JID",
+    "count must be between 1 and 50",
+    "deadline must be a date YYYY-MM-DD",
+    "decision must be accept|reject|remove",
+    "expect_name_prefix is required",
+    "invalid group message sender: expected a PN or LID author",
+    "jid is required",
+    "mentions are only supported for text messages",
+    "message_id is required",
+    "mode must be full (default) or recovery",
+    "name must be one of: regular, regular_low, regular_high, critical_block, critical_unblock_low",
+    "owed_by must be owner|other and origin request|demand|promise|event",
+    "phone required",
+    "poll message not found in local history",
+    "poll not found in the local database",
+    "poll not found: this bridge has not seen that poll",
+    "query is required",
+    "query required",
+    "recipient, name and phone_number are required",
+    "reply_to_message_id is only supported for text messages",
+    "sender_jid is required",
+    "sender_phone_number is required",
+    "the author is no longer in the group and the bridge does not know their address in it, so WhatsApp would drop this action",
+    "the owner's own chat is not supported",
+    "unknown group message sender: message not found in this chat",
+    "unknown group message sender: message store unavailable",
+    "unknown group message sender: stored author is empty or identifies the group",
+    "up_to must be an ISO-8601 instant with offset",
+}
+
 # Cache of sender_jid -> resolved name, avoids one HTTP round trip per message
 # when formatting a batch of messages (format_message is called per-message).
 _sender_name_cache: Dict[str, str] = {}
@@ -58,13 +128,6 @@ def _api_request(method: str, path: str, timeout: int = REQUEST_TIMEOUT, **kwarg
         raise BridgeError("Bridge unavailable; check that it is running and reachable") from None
 
 
-def _safe_bridge_detail(detail) -> bool:
-    """The bridge's own input errors tell the agent what to fix; anything that could hold a
-    path or URL of the bridge host stays out."""
-    return (isinstance(detail, str) and 0 < len(detail) <= 300 and detail.isprintable()
-            and "/" not in detail and "\\" not in detail)
-
-
 def _bridge_result(response: requests.Response, require_success: bool = False) -> dict:
     status = response.status_code
     invalid_json = False
@@ -84,7 +147,10 @@ def _bridge_result(response: requests.Response, require_success: bool = False) -
             503: "WhatsApp is not connected; check the bridge connection",
         }.get(status, "Bridge request failed")
         detail = result.get("error") or result.get("message") if isinstance(result, dict) else None
-        if 400 <= status < 500 and status not in (401, 429) and _safe_bridge_detail(detail):
+        if invalid_json:
+            detail = response.text.rstrip("\n")
+        if (400 <= status < 500 and status not in (401, 429)
+                and isinstance(detail, str) and detail in _PUBLIC_BRIDGE_ERRORS):
             reason = detail
         if status == 429:
             retry = result.get("retry_after") if isinstance(result, dict) else None

@@ -80,7 +80,7 @@ func NewMessageStore() (*MessageStore, error) {
 	if err := prepareDatabase("store/messages.db"); err != nil {
 		return nil, err
 	}
-	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on")
+	db, err := sql.Open("sqlite3", "file:store/messages.db?_foreign_keys=on&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open message database: %v", err)
 	}
@@ -2213,7 +2213,7 @@ func writeJSON(w http.ResponseWriter, v interface{}) {
 // messageStore.db (which uses the plain "sqlite3" driver) to avoid touching
 // the existing write path.
 func openUnaccentMessagesDB() (*sql.DB, error) {
-	return sql.Open("sqlite3_unaccent", "file:store/messages.db?_foreign_keys=on")
+	return sql.Open("sqlite3_unaccent", "file:store/messages.db?_foreign_keys=on&_txlock=immediate")
 }
 
 // openStoreDBReadOnly opens a read-only connection to whatsmeow's own

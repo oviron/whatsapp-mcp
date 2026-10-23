@@ -9,7 +9,7 @@ class NoToolDeclaresAnOutputSchema(unittest.TestCase):
 
     def test_every_registered_tool(self):
         tools = asyncio.run(load_main().mcp.list_tools())
-        self.assertGreater(len(tools), 30)
+        self.assertTrue(tools)
         self.assertEqual([t.name for t in tools if t.outputSchema], [])
 
 

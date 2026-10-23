@@ -25,9 +25,9 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 
 ## Checklist antes de abrir PR
 
-- [ ] `go build -o whatsapp-bridge .` compila; `go test ./...` passa.
+- [ ] `go build -tags sqlite_fts5 -o whatsapp-bridge .` compila; `go test -tags sqlite_fts5 ./...` e `go test ./...` passam.
 - [ ] `python3 -m unittest test_transcribe -v` passa.
-- [ ] Mudou main.go? Binário recompilado e bridge reiniciada — local: `launchctl kickstart -k`; Linux: `go build` no próprio host (CGO não cross-compila) + reiniciar o serviço (`systemctl --user restart` se veio do `install.sh --service`).
+- [ ] Mudou main.go? Binário recompilado e bridge reiniciada — local: `launchctl kickstart -k`; Linux: `go build -tags sqlite_fts5` no próprio host (CGO não cross-compila) + reiniciar o serviço (`systemctl --user restart` se veio do `install.sh --service`).
 - [ ] Sem path pessoal/secret vazando (transcription.env, API keys).
 - [ ] Mudou comportamento de sync/escrita? Conferir impacto em transcrições existentes.
 - [ ] README/install.sh coerentes se mudou onboarding (versão Go, env vars, troubleshooting).
@@ -46,7 +46,7 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 
 ```bash
 # build + test
-cd whatsapp-bridge && go build -o whatsapp-bridge . && go test ./...
+cd whatsapp-bridge && go build -tags sqlite_fts5 -o whatsapp-bridge . && go test -tags sqlite_fts5 ./... && go test ./...
 cd whatsapp-mcp-server && python3 -m unittest test_transcribe -v
 
 # serviço (macOS launchd)

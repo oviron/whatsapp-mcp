@@ -25,8 +25,8 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 
 ## Checklist antes de abrir PR
 
-- [ ] `go build -tags sqlite_fts5 -o whatsapp-bridge .` compila; `go test -tags sqlite_fts5 ./...` e `go test ./...` passam.
-- [ ] `python3 -m unittest test_transcribe -v` passa.
+- [ ] `gofmt -l .` vazio; `go build -tags sqlite_fts5 -o whatsapp-bridge .`, `go vet -tags sqlite_fts5 ./...`, `go test -tags sqlite_fts5 ./...` e `go test ./...` passam.
+- [ ] `uv run python -m unittest discover -p 'test_*.py'` passa.
 - [ ] Mudou main.go? Binário recompilado e bridge reiniciada — local: `launchctl kickstart -k`; Linux: `go build -tags sqlite_fts5` no próprio host (CGO não cross-compila) + reiniciar o serviço (`systemctl --user restart` se veio do `install.sh --service`).
 - [ ] Sem path pessoal/secret vazando (transcription.env, API keys).
 - [ ] Mudou comportamento de sync/escrita? Conferir impacto em transcrições existentes.
@@ -46,8 +46,8 @@ Tarefa multi-área: leia os arquivos relevantes em paralelo.
 
 ```bash
 # build + test
-cd whatsapp-bridge && go build -tags sqlite_fts5 -o whatsapp-bridge . && go test -tags sqlite_fts5 ./... && go test ./...
-cd whatsapp-mcp-server && python3 -m unittest test_transcribe -v
+cd whatsapp-bridge && go build -tags sqlite_fts5 -o whatsapp-bridge . && go vet -tags sqlite_fts5 ./... && go test -tags sqlite_fts5 ./... && go test ./...
+cd whatsapp-mcp-server && uv run python -m unittest discover -p 'test_*.py'
 
 # serviço (macOS launchd)
 launchctl print gui/$(id -u)/com.whatsapp-mcp.bridge          # status

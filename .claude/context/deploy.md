@@ -3,8 +3,7 @@
 ## Bridge remota (bridge e MCP em máquinas diferentes)
 
 Desde 2026-07-30 a bridge suporta rodar numa máquina diferente do MCP server (ex: bridge numa
-VPS/home server, MCP local no laptop) — o server ficou 100% stateless (ver `mcp-python.md`),
-então isso passou a ser suportado sem inventar nada além do que já existia:
+VPS/home server, MCP local no laptop). As tools usam REST; envio de arquivos requer paths acessíveis à bridge, e scripts de transcrição/clone precisam do store local (ver `mcp-python.md`).
 
 - **Bind**: por padrão `127.0.0.1` (só a própria máquina). Pra expor pra outra rede, `BIND_ADDR=<ip>`
   (endereço de uma VPN/rede privada — Tailscale, WireGuard, etc — nunca `0.0.0.0` direto pra
@@ -21,9 +20,8 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 - **Rede privada é sua escolha** (Tailscale, WireGuard, SSH tunnel, VPN da nuvem que você usa) —
   a bridge só precisa que `BIND_ADDR` aponte pra uma interface alcançável pelo MCP client.
   Cuidado com ordem de boot: se a bridge sobe **antes** da VPN/interface estar pronta, o bind
-  falha silenciosamente (`bind: cannot assign requested address`, só logado, não fatal) e o
-  processo fica "active" no systemd/launchd **sem porta nenhuma aberta** — checar `ss -tln`
-  além do status do serviço. Se usar systemd, adicionar `After=`/`Wants=` pro serviço da sua VPN.
+  falha com `bind: cannot assign requested address` e a bridge sai com código 1, antes de
+  conectar ao WhatsApp. Se usar systemd, adicionar `After=`/`Wants=` pro serviço da sua VPN.
 
 ## Host Linux (VM de dev) vs macOS
 
@@ -43,9 +41,9 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## launchd (serviço persistente — macOS)
 
-- Agent: `~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`. **`RunAtLoad=true` + `KeepAlive=true`** (arranca no login, reinicia se cair, ThrottleInterval 10s).
+- Agent: `~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`. Com `--service`, **`RunAtLoad=true` + `KeepAlive=true`** (arranca no login, reinicia se cair). Sem a flag, ambos são false e o plist não é carregado; o instalador não define `ThrottleInterval`.
 - Aponta pro `whatsapp-bridge/` do clone de onde a bridge roda (o install.sh usa `~/.whatsapp-mcp`). Executa `start-bridge.sh`.
-- **launchd NÃO herda `export` do shell** → env de transcrição vem de `transcription.env` (sourced por start-bridge.sh). O plist gerado manda stdout/stderr pra `<INSTALL_DIR>/bridge.log`. `WHATSAPP_BRIDGE_LOG` a bridge não lê: é do `recover_audios.py`, que lê esse arquivo.
+- **launchd NÃO herda `export` do shell** → env de transcrição vem de `transcription.env` (sourced por start-bridge.sh). O plist redireciona stdout/stderr para `$INSTALL_DIR/bridge.log`, mas não seta `WHATSAPP_BRIDGE_LOG`; para recovery manual, exportar essa variável apontando para o arquivo no shell que roda `recover_audios.py`.
 - Controle:
   - Parar: `launchctl bootout gui/$(id -u)/com.whatsapp-mcp.bridge`
   - Iniciar: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.whatsapp-mcp.bridge.plist`
@@ -53,18 +51,18 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## start-bridge.sh
 
-- `cd` próprio dir, source `transcription.env` opcional, `WHATSAPP_BRIDGE_PORT=<porta do install.sh, default 8080> exec ./whatsapp-bridge`.
+- Entra em `$INSTALL_DIR/whatsapp-bridge`, source `transcription.env` opcional, `WHATSAPP_STORE_DIR=<raiz salva pelo install.sh> WHATSAPP_BRIDGE_PORT=<porta do install.sh, default 8080> exec ./whatsapp-bridge`.
 - `transcription.env` é **gitignored** (path pessoal + prompt).
 
 ## Build
 
 - `cd whatsapp-bridge && go build -tags sqlite_fts5 -o whatsapp-bridge .` — recompilar após mudar main.go (binário stale não tem fixes). Sem a tag, busca de mensagens usa LIKE; com FTS5, o índice é preenchido em background e a busca usa LIKE até ele ficar completo.
-- `go run main.go` = dev (binário temp em /var/folders, morre ao fechar terminal). Loga no terminal, NÃO em arquivo → recover_audios não funciona com go run.
+- `go run -tags sqlite_fts5 .` = dev (compila todos os arquivos do pacote; `go run main.go` não compila). Loga no terminal por padrão; para recovery, redirecionar para arquivo e definir `WHATSAPP_BRIDGE_LOG` no shell do script.
 - Matar órfãos de porta: `lsof -ti TCP:${WHATSAPP_BRIDGE_PORT:-8080} | xargs kill`. `go run` spawna child `main` que sobrevive ao kill do pai.
 
 ## install.sh (para outros)
 
-- Gate Go 1.25+ (casa com go.mod). Clona em `~/.whatsapp-mcp`, compila, escreve config Claude/Cursor, cria start-bridge.sh + plist (RunAtLoad/KeepAlive=false por padrão lá).
+- Gate Go 1.26+ (casa com go.mod); exige `python3` presente, e `uv sync` resolve Python >=3.11. Clona em `~/.whatsapp-mcp` (`WHATSAPP_MCP_DIR` muda o destino), compila com `-tags sqlite_fts5`, escreve config Claude/Cursor, cria start-bridge.sh + plist (RunAtLoad/KeepAlive=false por padrão lá).
 - One-line: `curl -fsSL https://raw.githubusercontent.com/rodrigopg/whatsapp-mcp/main/install.sh | bash`.
 - Flags: `--service` cria unit systemd **user** `whatsapp-bridge` (Linux) / launchd KeepAlive (macOS); `--codex` registra o MCP no `~/.codex/config.toml`.
 
@@ -75,10 +73,10 @@ então isso passou a ser suportado sem inventar nada além do que já existia:
 
 ## QR / auth
 
-- Local (install.sh default): `http://localhost:8080/qr` no browser (PNG raw em `/qr.png`). macOS salva `/tmp/whatsapp-qr.png` e abre no Preview. QR renova a cada ~20s.
+- Local (install.sh default): `http://localhost:8080/qr` no browser (PNG raw em `/qr.png`). Salva `whatsapp-bridge/store/whatsapp-qr.png` (ou na raiz `WHATSAPP_STORE_DIR`) com modo 0600, abre no Preview no macOS e remove após parear. QR só é impresso com TTY; logs de serviço não contêm o QR. `-pair-phone`/`WHATSAPP_PAIR_PHONE` pede código de pareamento em vez de QR (fallback para QR se falhar).
 - Bridge remota: `/qr`/`/qr.png` ficam **sempre sem auth** mesmo com `API_AUTH_TOKEN` setado (é o próprio fluxo de pareamento) — acessar via túnel SSH (`ssh -L 8080:<bind-addr>:<porta> <host>`) ou direto pela rede privada se sua máquina já estiver nela.
-- **Re-parear:** QR só é emitido no startup quando `client.Store.ID == nil` (sem sessão em `whatsapp.db`). Logout remoto apaga a sessão mas NÃO re-entra no loop de QR em runtime — `/qr` fica preso em "connected". Precisa reiniciar o processo (`kill <pid>`; systemd/launchd com restart automático religa sozinho). Logout pelo celular já zera `whatsmeow_device`; aí o bridge sobe limpo e gera QR.
-- History sync ao parear é limitado (poucas msgs/conversas recentes), não histórico completo — normal do multi-device. Backup `messages.db` antes (INSERT OR REPLACE pode sobrescrever).
+- **Re-parear:** QR só é emitido no startup quando `client.Store.ID == nil` (sem sessão em `whatsapp.db`). Em `LoggedOut`, o supervisor espera a remoção da sessão e sai com código 1; systemd/launchd reinicia e gera novo QR. Para desvincular manualmente, parar o serviço e executar `./whatsapp-bridge -logout`, depois iniciar de novo para parear.
+- History sync pede até 365 dias ao parear; WhatsApp decide o que entrega. `StoreMessage` preserva transcrições contra conteúdo vazio do sync e mantém revogações/edições registradas. Fazer backup de `messages.db` e `whatsapp.db` antes de re-parear.
 
 ## Git
 

@@ -2,7 +2,7 @@
 
 > **This fork** ([oviron/whatsapp-mcp](https://github.com/oviron/whatsapp-mcp), branch
 > `combined`) is upstream [rodrigopg/whatsapp-mcp](https://github.com/rodrigopg/whatsapp-mcp)
-> `main` plus four pull requests sent upstream:
+> `main` plus fixes and features developed in this fork, including four pull requests sent upstream:
 > [#65](https://github.com/rodrigopg/whatsapp-mcp/pull/65) timeouts on bridge calls,
 > [#66](https://github.com/rodrigopg/whatsapp-mcp/pull/66) `whatsapp-bridge/store/` in `.gitignore`,
 > [#67](https://github.com/rodrigopg/whatsapp-mcp/pull/67) native quoted replies and
@@ -10,7 +10,7 @@
 > Install it as in [Manual install](#manual-install), cloning this branch:
 > `git clone -b combined https://github.com/oviron/whatsapp-mcp.git`, and start the bridge
 > with `go run -tags sqlite_fts5 .` (the bridge is several files, so `go run main.go` does not build).
-> Configuration and everything else are upstream's.
+> Fork-specific configuration and features are documented below.
 
 [![CI](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/rodrigopg/whatsapp-mcp/actions/workflows/ci.yml)
 
@@ -90,8 +90,8 @@ WhatsApp has been migrating contacts from phone-based JIDs (`+55...@s.whatsapp.n
 - `resolvePhoneToJIDs` (Go bridge) — looks up all JID variants (PN + LID) for a phone number via `whatsapp.db`, exposed to the MCP server through `POST /api/chat/by_contact`
 - `POST /api/contacts/search` searches `whatsmeow_contacts` in `whatsapp.db` first (real names + LID contacts), falling back to `messages.db`
 - `get_direct_chat_by_contact` resolves LID JIDs to phone numbers correctly (bridge-side, via the endpoint above)
-- `resolveToPN` in the Go bridge normalizes LID→PN at write time so the same contact never splits across two `chat_jid` values
-- `migrateLIDChats` runs at startup and merges any existing `@lid` chat rows into their `@s.whatsapp.net` equivalents (transactional, idempotent)
+- `resolveToPN` in the Go bridge normalizes LID→PN at write time when the mapping is known; unresolved authors retain their full `@lid` JID
+- `migrateLIDChats` (`lid_merge.go`) runs at startup and merges existing `@lid` chats into their known `@s.whatsapp.net` equivalents (one transaction per chat, idempotent), including associated state and authors; cached media moves resume after a failure
 
 ### Message text search
 
@@ -247,14 +247,13 @@ def wa():
 ```
 
 **Running the MCP server against a remote bridge** (e.g. the bridge lives on a VPS/home
-server, Claude Code runs on your laptop): the MCP server talks to the bridge over HTTP only —
-it doesn't read any local SQLite file — so pointing `WHATSAPP_API_BASE_URL` at a remote host is
-enough. Don't bind the bridge's REST API to a public IP without `API_AUTH_TOKEN` set; a private
+server, Claude Code runs on your laptop): read tools and text sends use HTTP without local SQLite access. Set `WHATSAPP_API_BASE_URL` and, when the bridge requires auth, `WHATSAPP_API_AUTH_TOKEN`. File sends need a path accessible to the bridge; transcription/recovery and voice dataset scripts need local access to the store. Don't bind the bridge's REST API to a public IP without `API_AUTH_TOKEN` set; a private
 network (Tailscale, WireGuard, SSH tunnel) plus the token is the recommended setup.
 
 **Read-only and remote MCP (opt-in).** Both are off by default; stdio installs behave exactly as before.
 
 - `MCP_READONLY=true` — registers only the read tools (`search_contacts`, `list_messages`, `list_chats`, `list_active_chats`, `list_matters`, `review_next_messages`, `list_chase_drafts`, `suggest_favorites`, `list_favorites`, `get_chat`, `get_direct_chat_by_contact`, `get_contact_chats`, `get_last_interaction`, `get_message_context`, `get_group_info`, `resolve_contact`, `check_whatsapp`, `get_poll_votes`). Tools that can change state under any argument are treated as writes, so `get_group_invite_link` (its `reset` flag revokes the link) is hidden too. Every write tool, including `download_media` (it writes files to disk), is not exposed at all. Works with either transport.
+- `API_READONLY=true` — separately restricts the Go bridge to an allowlist of read routes; unlisted routes return 403, including sends, edits, revokes, mark-read/unread and history backfill. `/api/download` remains allowed to fetch media into the local store. Set this in the bridge environment, alongside `MCP_READONLY=true` in the MCP environment when both layers should enforce read-only access.
 - `MCP_TRANSPORT=streamable-http` — serves MCP over HTTP instead of stdio, at `http://<MCP_HOST>:<MCP_PORT>/mcp` (defaults `127.0.0.1` and `8000`; `/mcp/` works too). `MCP_AUTH_TOKEN` is **mandatory**: the server refuses to start without it, and every request needs `Authorization: Bearer <token>` (checked in constant time, 401 otherwise).
 
 ```bash
@@ -264,7 +263,7 @@ MCP_TRANSPORT=streamable-http MCP_READONLY=true MCP_AUTH_TOKEN="$(openssl rand -
 
 **Claude web (claude.ai) custom connector (opt-in).** Claude web reaches your server from Anthropic's cloud, so it needs a public `https://` URL and OAuth (some plans can instead send a fixed `Authorization: Bearer <MCP_AUTH_TOKEN>` header: choose "No sign-in" and add it under "Request headers"). Set `MCP_PUBLIC_URL` (the public address, no `/mcp`) and `MCP_OAUTH_PASSPHRASE` (24+ characters, `openssl rand -hex 24`) next to `MCP_AUTH_TOKEN` and the server also becomes a tiny single-owner OAuth 2.1 server: discovery, dynamic client registration (only Claude's callbacks and loopback ones are accepted), authorization code with PKCE, one-hour access tokens, rotating 30-day refresh tokens (stored hashed in `MCP_OAUTH_DB`, default `mcp-oauth.db`). You approve a connection by typing the passphrase on the login page (10 wrong tries per 15 minutes blocks everyone for a while). Then add `https://<your host>/mcp` under Customize > Connectors > Add custom connector. **ChatGPT** works the same way (Settings > Connectors > Advanced > Developer mode, then create a connector with the URL and OAuth; Plus, Pro, Business, Enterprise and Edu plans): its callbacks (`chatgpt.com`, `chat.openai.com`) are accepted at registration. Read tools carry `readOnlyHint`, so both clients can treat them as reads. Put TLS in front (reverse proxy); the app itself speaks plain HTTP. Anyone with the passphrase or a valid token can read your messages, and send them unless `MCP_READONLY=true`, so keep both secret and consider `MCP_READONLY=true` for work accounts. Claude asks you to approve each tool call unless you choose "Always allow".
 
-Security: the HTTP transport has no TLS. A bearer token over plain HTTP is readable by anyone on the path, so keep the default loopback bind and reach it through an SSH tunnel, Tailscale/WireGuard, or a TLS-terminating reverse proxy. Prefer `MCP_READONLY=true` for any remote client: a leaked token on a read-only server cannot send, delete or download anything, but it can still read all your messages. Requires `mcp>=1.9` (the lockfile pins 1.9.4).
+Security: the HTTP transport has no TLS. A bearer token over plain HTTP is readable by anyone on the path, so keep the default loopback bind and reach it through an SSH tunnel, Tailscale/WireGuard, or a TLS-terminating reverse proxy. Prefer `MCP_READONLY=true` for any remote client: a leaked token on a read-only server cannot send, delete or download anything, but it can still read all your messages. Requires `mcp>=1.30,<2` (the lockfile pins 1.30.0).
 
 ---
 
@@ -279,7 +278,7 @@ The fastest path for Claude Code users:
 /plugin install whatsapp-mcp@rodrigopg
 ```
 
-Then run `/whatsapp-mcp:setup` for guided onboarding: it checks dependencies (Go 1.25+, uv, git), builds and installs the bridge as a service, and walks you through QR pairing. The plugin installs from this repo's `main` branch. The first tool call after install/update may be slow while `uv` resolves dependencies.
+Then run `/whatsapp-mcp:setup` for guided onboarding: it checks dependencies, runs `install.sh --service` (Go 1.26+), and walks you through QR pairing. The installer clones upstream `rodrigopg/whatsapp-mcp` by default; use the fork checkout above for `combined`. The first tool call after install/update may be slow while `uv` resolves dependencies.
 
 ---
 
@@ -290,9 +289,9 @@ curl -fsSL https://raw.githubusercontent.com/rodrigopg/whatsapp-mcp/main/install
 ```
 
 The script:
-- checks Go 1.25+, Python 3.9+, uv (installs uv if missing)
+- checks Go 1.26+, the presence of `python3`, git and uv (installs uv if missing); `uv sync` resolves Python >=3.11 for the MCP server
 - clones the repo to `~/.whatsapp-mcp`
-- compiles the Go bridge
+- compiles the Go bridge with `-tags sqlite_fts5`
 - writes `claude_desktop_config.json` / `~/.cursor/mcp.json` automatically
 - creates a `start-bridge.sh` launcher
 - on macOS: writes a launchd plist for optional auto-start
@@ -340,8 +339,8 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
 
 #### Prerequisites
 
-- Go 1.25+ (go.mod asks for Go 1.26 and the patched 1.27.3 toolchain: Go downloads it by itself the first time)
-- Python 3.9+
+- Go 1.26+ (go.mod selects the patched 1.27.3 toolchain: Go downloads it by itself the first time)
+- Python 3.11+
 - Claude Desktop (or Cursor)
 - UV: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - FFmpeg — *optional* for sending/converting audio; *required* only if you enable **local** audio transcription (the `local` engine shells out to `ffmpeg`). Not needed for the API engine or core MCP use.
@@ -363,7 +362,7 @@ env = { WHATSAPP_BRIDGE_PORT = "8080" }
    ./whatsapp-bridge
    ```
 
-   On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page auto-refreshes when a new code is generated. The QR also appears in an interactive terminal and is saved to `whatsapp-bridge/store/whatsapp-qr.png` (mode `0600`, relative to the clone root), opened in Preview on macOS, and removed after pairing. Service logs do not contain the QR. When pairing by phone code, no QR is shown.
+   On first run, open **http://localhost:8080/qr** in your browser and scan the QR code with WhatsApp (Settings → Linked Devices → Link a Device). The page refreshes every 20 seconds. The QR also appears in an interactive terminal and is saved to `whatsapp-bridge/store/whatsapp-qr.png` by default (or under `WHATSAPP_STORE_DIR`, mode `0600`), opened in Preview on macOS, and removed after pairing. Service logs do not contain the QR. Phone-code pairing suppresses QR output unless the code request fails and falls back to QR.
 
    No browser at hand (a VPS, a headless box)? Pair by code instead: start the bridge with `-pair-phone <number in international format>` (or `WHATSAPP_PAIR_PHONE`), and it prints an 8-character code to type on the phone under Linked Devices → Link a Device → Link with phone number instead.
 
@@ -415,7 +414,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
    WhatsApp servers
 ```
 
-**Storage** (`whatsapp-bridge/store/`):
+**Storage** (`whatsapp-bridge/store/` by default, or `WHATSAPP_STORE_DIR`):
 - `messages.db` — chats, messages, senders (local SQLite, written by the bridge)
 - `whatsapp.db` — whatsmeow session + contact store (written by whatsmeow)
 
@@ -449,6 +448,9 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `vote_in_poll` | Cast (or retract) your own vote in a poll |
 | `list_active_chats` | Who you talked to in a period (e.g. one day): one row per conversation with first/last time, count, last-message snippet and a link |
 | `get_chat` | Get chat metadata, including `unread_count` from WhatsApp read receipts and the separate `marked_as_unread` badge |
+| `get_group_info` | Read group metadata and participants |
+| `archive_chat` | Archive or unarchive a chat |
+| `resolve_contact` | Resolve a phone number to its WhatsApp JIDs |
 | `mark_chat_as_read` | Send read receipts and clear the chat unread badge; update local read state after each successful WhatsApp operation |
 | `mark_chat_as_unread` | Set the WhatsApp and local unread badge without changing message read receipts |
 | `get_direct_chat_by_contact` | Find a direct chat by phone number (LID-aware) |
@@ -457,6 +459,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 | `get_message_context` | Messages around a specific message, including locations, contact cards, stickers and reactions on each message |
 | `send_message` | Send a text message, optionally as a native reply quoting a stored text message or @-mentioning people |
 | `react_to_message` | Add or remove a reaction; for another group member's message, its author must be stored in the bridge's local history |
+| `edit_message` | Edit the text of a message you sent |
 | `delete_message` | Delete a message for everyone; another group member's message requires a stored author and group admin permission |
 | `send_file` | Send image, video, document, or audio file |
 | `send_audio_message` | Send audio as a WhatsApp voice message |
@@ -482,7 +485,7 @@ Go WhatsApp Bridge (whatsapp-bridge/)
 - **LID contacts not found**: happens when WhatsApp hasn't yet synced the LID→PN mapping locally. Reconnect to trigger a fresh sync.
 - **Bridge lost the session**: on logout (unlinked from the phone, or the session expired) the bridge logs the reason and exits with code 1; under the launchd/systemd service it restarts and serves a fresh QR at `/qr`. When a second bridge connects with the same `store/` WhatsApp drops the first one ("Another client took over this WhatsApp session"): the bridge backs off from 30 s up to 30 min before reconnecting, so stop the duplicate. A temporary ban or an outdated client is logged with the reason; reads keep working from the local database meanwhile. A paired bridge that stays offline for any other reason is reconnected by a watchdog every minute.
 - **Re-pairing cleanly**: stop the bridge service, then run `./whatsapp-bridge -logout` from `whatsapp-bridge/`: it unlinks the device on the phone too and removes the session from `store/whatsapp.db` (deleting the file alone leaves a dead entry under Linked Devices). Start the service again to pair.
-- **Out of sync / re-pairing**: deleting `whatsapp-bridge/store/whatsapp.db` (or re-scanning the QR for any reason) forces WhatsApp to re-deliver up to a year of history. The re-sync keeps existing transcriptions (an incoming empty `content` never overwrites a stored one), but it is still a bulk rewrite of `messages.db`: **back up `whatsapp-bridge/store/messages.db` and `whatsapp.db` first**. Deleting `messages.db` loses every transcription, since the sync brings audio back without text; run `transcribe.py` / `recover_audios.py` afterwards to rebuild them.
+- **Out of sync / re-pairing**: a fresh pairing requests up to a year of history; WhatsApp decides what it delivers. The re-sync keeps existing transcriptions (an incoming empty `content` never overwrites a stored one), but it still updates `messages.db` in bulk: **back up the entire store before re-pairing**, including `messages.db`, `whatsapp.db`, SQLite sidecars and media. Deleting `messages.db` loses every transcription, since the sync brings audio back without text; run `transcribe.py` / `recover_audios.py` afterwards to rebuild them.
 - **Device limit**: WhatsApp limits linked devices. Remove one via Settings → Linked Devices on your phone.
 - **Dev clone or custom port**: point the MCP server at your setup via the `WHATSAPP_BRIDGE_PORT` or `WHATSAPP_API_BASE_URL` env vars.
 

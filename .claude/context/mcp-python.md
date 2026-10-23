@@ -1,9 +1,11 @@
 # Contexto: Servidor MCP Python
 
-Servidor MCP (`whatsapp-mcp-server/`) — expõe tools ao Claude/Cursor via stdio, fala HTTP REST
-com a bridge Go pra tudo (leitura E escrita). **Não lê SQLite local** — `whatsapp.py` não tem
-`import sqlite3`, é 100% stateless. Isso permite bridge remota (VPS) + MCP local sem
-compartilhar filesystem.
+Servidor MCP (`whatsapp-mcp-server/`) — expõe tools via stdio por padrão (HTTP opt-in com `MCP_TRANSPORT=streamable-http`), fala HTTP REST
+com a bridge Go pra leitura E escrita de WhatsApp. **As tools não leem SQLite local** — `whatsapp.py` não tem
+`import sqlite3`. Isso permite bridge remota (VPS) + MCP local sem
+compartilhar filesystem para as tools REST de leitura e envio de texto. Envio de arquivos usa um path que precisa existir na máquina da bridge; transcrição/recovery e clone de voz continuam usando SQLite/mídia local.
+
+Python **>=3.11**, MCP SDK **>=1.30,<2** (`pyproject.toml`; lock em 1.30.0).
 
 ## Busca accent-insensitive
 
@@ -26,7 +28,7 @@ compartilhar filesystem.
 
 ## Tools expostas
 
-search_contacts, list_messages, list_chats, list_active_chats, list_matters, review_next_messages, morning_summary, create_chase_draft, list_chase_drafts, approve_chase_draft, discard_chase_draft, suggest_favorites, list_favorites, decide_favorite, record_matter, close_matter, reopen_matter, mark_reviewed, get_chat, get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context, send_message, send_contact, send_file, send_audio_message, download_media, create_group, leave_group.
+search_contacts, list_messages, list_chats, list_active_chats, get_chat, get_direct_chat_by_contact, get_contact_chats, get_last_interaction, get_message_context, send_message, send_file, send_audio_message, send_voice_message, download_media, create_group, leave_group, mark_chat_as_read, mark_chat_as_unread, get_group_info, request_chat_history, archive_chat, resolve_contact, create_poll, send_contact, list_matters, review_next_messages, record_matter, close_matter, reopen_matter, mark_reviewed, suggest_favorites, list_favorites, decide_favorite, morning_summary, create_chase_draft, list_chase_drafts, approve_chase_draft, discard_chase_draft, vote_in_poll, get_poll_votes, react_to_message, edit_message, delete_message, update_group_participants, get_group_invite_link, join_group_with_link, update_group_settings, send_chat_presence, check_whatsapp.
 
 ## Endpoint da bridge + auth
 
@@ -34,15 +36,13 @@ search_contacts, list_messages, list_chats, list_active_chats, list_matters, rev
 - `WHATSAPP_API_AUTH_TOKEN` — obrigatório se a bridge exige auth (ver `bridge-go.md`, seção
   `API_AUTH_TOKEN`). Vai em todo request como `Authorization: Bearer <token>`, inclusive nas
   chamadas de escrita já existentes (`send_message`, `send_file`, etc).
-- A bridge passa esse var derivado de `WHATSAPP_BRIDGE_PORT` pro sweep de transcrição, pra download bater na porta certa.
+- A bridge passa `WHATSAPP_API_BASE_URL` derivado de `WHATSAPP_BRIDGE_PORT` e o token derivado de `API_AUTH_TOKEN` pro sweep de transcrição quando os equivalentes Python não estão definidos.
 
 ## Endpoints REST consumidos (todos POST, JSON body/response)
 
-`/api/chats`, `/api/messages`, `/api/message_context`, `/api/contacts/search`,
+`/api/chats`, `/api/chats/active`, `/api/messages`, `/api/message_context`, `/api/contacts/search`,
 `/api/contacts/chats`, `/api/contacts/last_interaction`, `/api/chat`, `/api/chat/by_contact`,
-`/api/sender_name` — implementados em `main.go`, que é o contrato. Timestamps vêm com offset
-explícito (ex. `-03:00`), não `Z` — `_parse_ts()` em `whatsapp.py` trata os dois formatos, mas
-não depender de `Z` sendo enviado.
+`/api/sender_name` — implementados em `main.go`, que é o contrato. Timestamps são RFC3339, com o offset armazenado ou `Z` para UTC; `_parse_ts()` em `whatsapp.py` trata os dois formatos.
 
 ## Config no cliente
 

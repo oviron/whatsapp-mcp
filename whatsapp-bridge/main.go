@@ -1630,7 +1630,9 @@ func handleGroupSettings(client groupSettingsClient, messageStore *MessageStore)
 				status := http.StatusInternalServerError
 				var limited *sendRateError
 				if errors.As(err, &limited) {
-					first, checkErr := outboundFirstContact(ctx, messageStore, groupJID)
+					checkCtx, cancelCheck := context.WithTimeout(ctx, time.Second)
+					first, checkErr := outboundFirstContact(checkCtx, messageStore, groupJID)
+					cancelCheck()
 					if checkErr != nil {
 						first = true
 					}

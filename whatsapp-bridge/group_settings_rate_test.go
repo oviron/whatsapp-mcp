@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -101,7 +102,11 @@ func TestGroupSettingsPartialFailureAndRetry(t *testing.T) {
 		if w.Header().Get("Retry-After") == "" || len(client.calls) != 2 {
 			t.Fatalf("rejected retry sent an action or omitted Retry-After: %v", client.calls)
 		}
-		time.Sleep(30 * time.Second)
+		retry, err := strconv.Atoi(w.Header().Get("Retry-After"))
+		if err != nil || retry <= 0 {
+			t.Fatalf("invalid Retry-After: %q", w.Header().Get("Retry-After"))
+		}
+		time.Sleep(time.Duration(retry) * time.Second)
 		settingsRequest(t, handler, body, http.StatusOK, []string{"name", "topic", "locked"})
 		if !reflect.DeepEqual(client.calls, []string{"name", "topic", "name", "topic", "locked"}) {
 			t.Fatalf("retry calls = %v", client.calls)
@@ -116,10 +121,11 @@ func TestGroupSettingsPartialRateLimitAndRetryRemaining(t *testing.T) {
 		client := &fakeGroupSettings{}
 		handler := handleGroupSettings(client, store)
 		w := settingsRequest(t, handler, `{"group_jid":"123@g.us","name":"test","topic":"topic"}`, http.StatusTooManyRequests, []string{"name"})
-		if w.Header().Get("Retry-After") != "11" {
-			t.Fatalf("Retry-After = %q", w.Header().Get("Retry-After"))
+		retry, err := strconv.Atoi(w.Header().Get("Retry-After"))
+		if err != nil || retry <= 0 {
+			t.Fatalf("invalid Retry-After: %q", w.Header().Get("Retry-After"))
 		}
-		time.Sleep(30 * time.Second)
+		time.Sleep(time.Duration(retry) * time.Second)
 		settingsRequest(t, handler, `{"group_jid":"123@g.us","topic":"topic"}`, http.StatusOK, []string{"topic"})
 		if !reflect.DeepEqual(client.calls, []string{"name", "topic"}) {
 			t.Fatalf("retry resent applied fields: %v", client.calls)

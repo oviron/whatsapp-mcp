@@ -41,14 +41,25 @@ class SendRateTests(unittest.TestCase):
             lambda: whatsapp.matter_call("/drafts/approve", {"draft_id": 1}),
         ):
             with self.subTest(call=call), patch.object(
-                whatsapp.requests, "request", return_value=self.response()
+                whatsapp.requests, "post", return_value=self.response()
             ) as request:
                 result = call()
+                self.assertFalse(result.get("success", False) if isinstance(result, dict) else result[0])
                 message = result["error"] if isinstance(result, dict) else result[1]
                 self.assertIn("rate limit", message.lower())
                 self.assertIn("30", message)
                 self.assertNotIn("private bridge detail", message)
                 request.assert_called_once()
+
+    def test_json_retry_delay_takes_precedence_over_header(self):
+        response = self.response("30")
+        response.json.return_value["retry_after"] = 17
+        with patch.object(whatsapp.requests, "post", return_value=response) as post:
+            ok, message = whatsapp.send_message("peer", "hello")
+        self.assertFalse(ok)
+        self.assertIn("17 seconds", message)
+        self.assertNotIn("private bridge detail", message)
+        post.assert_called_once()
 
     def test_untrusted_retry_header_is_not_echoed(self):
         with patch.object(whatsapp.requests, "post", return_value=self.response("private bridge detail")):

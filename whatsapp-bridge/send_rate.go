@@ -152,20 +152,24 @@ func outboundChatJIDs(ctx context.Context, client *whatsmeow.Client, chat types.
 	return chats
 }
 
+func outboundFirstContact(ctx context.Context, store *MessageStore, chats ...types.JID) (bool, error) {
+	if store == nil || len(chats) == 0 || chats[0].IsEmpty() {
+		return true, nil
+	}
+	var conditions []string
+	var args []any
+	for _, chat := range chats {
+		conditions = append(conditions, "chat_jid = ?")
+		args = append(args, chat.ToNonAD().String())
+	}
+	var known bool
+	err := store.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM messages WHERE `+strings.Join(conditions, " OR ")+`)`, args...).Scan(&known)
+	return !known, err
+}
+
 func beginOutbound(ctx context.Context, store *MessageStore, chats ...types.JID) (func(), error) {
 	return outboundLimiter.acquire(ctx, func(ctx context.Context) (bool, error) {
-		if store == nil || len(chats) == 0 || chats[0].IsEmpty() {
-			return true, nil
-		}
-		var conditions []string
-		var args []any
-		for _, chat := range chats {
-			conditions = append(conditions, "chat_jid = ?")
-			args = append(args, chat.ToNonAD().String())
-		}
-		var known bool
-		err := store.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM messages WHERE `+strings.Join(conditions, " OR ")+`)`, args...).Scan(&known)
-		return !known, err
+		return outboundFirstContact(ctx, store, chats...)
 	})
 }
 

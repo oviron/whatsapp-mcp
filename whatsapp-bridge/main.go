@@ -1630,11 +1630,18 @@ func handleGroupSettings(client groupSettingsClient, messageStore *MessageStore)
 				status := http.StatusInternalServerError
 				var limited *sendRateError
 				if errors.As(err, &limited) {
+					first, checkErr := outboundFirstContact(ctx, messageStore, groupJID)
+					if checkErr != nil {
+						first = true
+					}
+					// A retry is a new request, so an empty group needs first-contact pacing again.
+					limited = &sendRateError{max(limited.retryAfter, outboundLimiter.retry(first))}
+					err = limited
 					status = http.StatusTooManyRequests
 					w.Header().Set("Retry-After", strconv.Itoa(retrySeconds(limited.retryAfter)))
 				}
 				writeGroupAction(w, status, GroupActionResponse{
-					Message: fmt.Sprintf("Set %s error: %v", s.field, err), Applied: applied,
+					Message: fmt.Sprintf("Set %s error: %v (applied: %s)", s.field, err, strings.Join(applied, ", ")), Applied: applied,
 				})
 				return
 			}

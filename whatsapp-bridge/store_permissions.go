@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -29,6 +30,9 @@ func privateDirectory(path string) error {
 }
 
 func prepareStore() error {
+	if root := os.Getenv("WHATSAPP_STORE_DIR"); root != "" && !filepath.IsAbs(root) {
+		return errors.New("WHATSAPP_STORE_DIR must be an absolute path")
+	}
 	if err := privateDirectory(storePath()); err != nil {
 		return err
 	}

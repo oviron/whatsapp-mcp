@@ -27,12 +27,12 @@ with patch.object(clone_voice, 'rows', return_value=[]) as rows:
                                     check=True, capture_output=True, text=True)
             self.assertEqual(result.stdout.strip(), str(store / "messages.db"))
 
-    def test_python_paths_match_bridge(self):
+    def test_python_paths_use_default_or_absolute_store(self):
         bridge = Path(__file__).resolve().parent.parent / "whatsapp-bridge"
         code = ("import json,media_paths,transcribe,recover_audios; "
                 "print(json.dumps([str(media_paths.STORE_DIR),transcribe.DB_PATH,recover_audios.DB_PATH]))")
         with tempfile.TemporaryDirectory() as tmp:
-            for value in (None, "", "relative data", "~/literal", str(Path(tmp) / "external [data] #?%")):
+            for value in (None, "", str(Path(tmp) / "external [data] #?%")):
                 with self.subTest(value=value):
                     env = dict(os.environ)
                     env.pop("WHATSAPP_STORE_DIR", None)
@@ -41,7 +41,7 @@ with patch.object(clone_voice, 'rows', return_value=[]) as rows:
                     env["PYTHONPATH"] = str(Path(__file__).resolve().parent)
                     result = subprocess.run([sys.executable, "-c", code], cwd=tmp, env=env,
                                             check=True, capture_output=True, text=True)
-                    root = Path(os.path.abspath(bridge / (value or "store")))
+                    root = Path(value) if value else bridge / "store"
                     self.assertEqual([Path(path).resolve() for path in json.loads(result.stdout)],
                                      [root.resolve(), (root / "messages.db").resolve(),
                                       (root / "messages.db").resolve()])

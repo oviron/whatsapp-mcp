@@ -4545,6 +4545,11 @@ var sweepOnce sync.Once
 // prevents overlapping runs if a sweep outlasts the interval (e.g. a backlog
 // after downtime).
 func startTranscriptionSweep(interval time.Duration) {
+	storeDir, err := filepath.Abs(storePath())
+	if err != nil {
+		fmt.Printf("transcription sweep disabled: %v\n", err)
+		return
+	}
 	pyDir, err := filepath.Abs("../whatsapp-mcp-server")
 	if err != nil {
 		fmt.Printf("transcription sweep disabled: %v\n", err)
@@ -4588,7 +4593,7 @@ func startTranscriptionSweep(interval time.Duration) {
 			// BIND_ADDR (e.g. a Tailscale IP) — ListenAndServe only accepts
 			// connections on the address it was given. A pre-set
 			// WHATSAPP_API_BASE_URL wins.
-			cmd.Env = os.Environ()
+			cmd.Env = append(os.Environ(), "WHATSAPP_STORE_DIR="+storeDir)
 			if os.Getenv("WHATSAPP_API_BASE_URL") == "" {
 				port := "8080"
 				if p := os.Getenv("WHATSAPP_BRIDGE_PORT"); p != "" {

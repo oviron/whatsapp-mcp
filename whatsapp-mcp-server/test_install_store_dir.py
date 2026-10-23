@@ -44,7 +44,7 @@ class InstallStoreDirTest(unittest.TestCase):
                     target.mkdir()
                 if destination == "populated":
                     (target / "messages.db").write_bytes(b"history")
-                env = dict(os.environ, INSTALL_DIR=tmp, STORE_DIR=str(target))
+                env = dict(os.environ, INSTALL_DIR=tmp, WHATSAPP_STORE_DIR=str(target))
                 script = ('set -eu\nwarn() { echo "$*"; }\n' + installer[start:end]
                           + 'printf "pending=%s\\n" "$STORE_MIGRATION_PENDING"')
                 result = subprocess.run(["bash", "-c", script], env=env, check=True,

@@ -9,7 +9,6 @@ umask 077
 REPO_URL="https://github.com/rodrigopg/whatsapp-mcp.git"
 INSTALL_DIR="${WHATSAPP_MCP_DIR:-$HOME/.whatsapp-mcp}"
 BRIDGE_PORT="${WHATSAPP_BRIDGE_PORT:-8080}"
-STORE_DIR="${WHATSAPP_STORE_DIR:-}"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -100,11 +99,32 @@ chmod 600 "$INSTALL_DIR/bridge.log"
 success "Repository ready"
 
 # ── store migration notice ──────────────────────────────────────────────────
+PREVIOUS_STORE_DIR=""
+if [[ -f "$INSTALL_DIR/start-bridge.sh" ]]; then
+  # Sourcing the trusted launcher would also start the bridge; read only its saved assignment.
+  while IFS= read -r line; do
+    case "$line" in
+      WHATSAPP_STORE_DIR=*' WHATSAPP_BRIDGE_PORT='*' exec ./whatsapp-bridge')
+        assignment="${line% WHATSAPP_BRIDGE_PORT=*}"
+        eval "PREVIOUS_STORE_DIR=${assignment#WHATSAPP_STORE_DIR=}"
+        ;;
+    esac
+  done < "$INSTALL_DIR/start-bridge.sh"
+fi
+if [[ "${WHATSAPP_STORE_DIR+x}" ]]; then
+  STORE_DIR="$WHATSAPP_STORE_DIR"
+else
+  STORE_DIR="$PREVIOUS_STORE_DIR"
+fi
+if [[ -n "$STORE_DIR" ]]; then
+  STORE_DIR=$(python3 -c 'import os,sys; print(os.path.abspath(os.path.join(sys.argv[1], "whatsapp-bridge", sys.argv[2])) + ".")' "$INSTALL_DIR" "$STORE_DIR")
+  STORE_DIR="${STORE_DIR%.}"
+fi
 STORE_MIGRATION_PENDING=0
 if [[ -n "${STORE_DIR:-}" ]]; then
   STORE_TARGET="$STORE_DIR"
-  [[ "$STORE_TARGET" = /* ]] || STORE_TARGET="$INSTALL_DIR/whatsapp-bridge/$STORE_TARGET"
-  OLD_STORE="$INSTALL_DIR/whatsapp-bridge/store"
+  OLD_STORE="${PREVIOUS_STORE_DIR:-$INSTALL_DIR/whatsapp-bridge/store}"
+  [[ "$OLD_STORE" = /* ]] || OLD_STORE="$INSTALL_DIR/whatsapp-bridge/$OLD_STORE"
   if [[ -d "$OLD_STORE" && ! "$OLD_STORE" -ef "$STORE_TARGET" ]] &&
      { [[ ! -e "$STORE_TARGET" ]] || [[ -d "$STORE_TARGET" && -z "$(ls -A "$STORE_TARGET")" ]]; }; then
     STORE_MIGRATION_PENDING=1
@@ -117,7 +137,11 @@ if [[ -n "${STORE_DIR:-}" ]]; then
       printf '  rmdir -- %q\n' "$STORE_TARGET"
     fi
     printf '  mv -- %q %q\n' "$OLD_STORE" "$STORE_TARGET"
-    echo "  Start the bridge again with the generated start-bridge.sh or its service."
+    printf '  WHATSAPP_STORE_DIR=%q %q' "$STORE_TARGET" "$INSTALL_DIR/install.sh"
+    [[ "${WITH_SERVICE:-0}" -eq 0 ]] || printf ' --service'
+    [[ "${WITH_CODEX:-0}" -eq 0 ]] || printf ' --codex'
+    printf '\n'
+    echo "  Re-run the installer after moving the store, then start the bridge with start-bridge.sh or its service."
   fi
 fi
 
@@ -205,8 +229,11 @@ fi
 
 # ── create launch script ─────────────────────────────────────────────────────
 LAUNCH_SCRIPT="$INSTALL_DIR/start-bridge.sh"
-printf -v STORE_DIR_QUOTED '%q' "${STORE_DIR:-}"
-cat > "$LAUNCH_SCRIPT" <<LAUNCH
+if [[ "${STORE_MIGRATION_PENDING:-0}" -eq 1 ]]; then
+  warn "Store migration pending — launch script left unchanged."
+else
+  printf -v STORE_DIR_QUOTED '%q' "${STORE_DIR:-}"
+  cat > "$LAUNCH_SCRIPT" <<LAUNCH
 #!/usr/bin/env bash
 set -e
 umask 077
@@ -220,8 +247,9 @@ cd "$INSTALL_DIR/whatsapp-bridge"
 [ -f "$INSTALL_DIR/transcription.env" ] && . "$INSTALL_DIR/transcription.env"
 WHATSAPP_STORE_DIR=$STORE_DIR_QUOTED WHATSAPP_BRIDGE_PORT=$BRIDGE_PORT exec ./whatsapp-bridge
 LAUNCH
-chmod +x "$LAUNCH_SCRIPT"
-success "Launch script: $LAUNCH_SCRIPT"
+  chmod +x "$LAUNCH_SCRIPT"
+  success "Launch script: $LAUNCH_SCRIPT"
+fi
 
 # ── service helpers (--service) ──────────────────────────────────────────────
 bridge_already_running() {

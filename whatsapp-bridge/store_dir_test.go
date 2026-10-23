@@ -24,7 +24,7 @@ func TestStoreDirDatabasesMediaAndQR(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		external += "?"
 	}
-	for _, configured := range []string{"", "relative data", "~/literal", external} {
+	for _, configured := range []string{"", external} {
 		t.Run(configured, func(t *testing.T) {
 			t.Setenv("WHATSAPP_STORE_DIR", configured)
 			s := setupChatStore(t)

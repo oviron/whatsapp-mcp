@@ -121,28 +121,26 @@ if [[ -n "$STORE_DIR" ]]; then
   STORE_DIR="${STORE_DIR%.}"
 fi
 STORE_MIGRATION_PENDING=0
-if [[ -n "${STORE_DIR:-}" ]]; then
-  STORE_TARGET="$STORE_DIR"
-  OLD_STORE="${PREVIOUS_STORE_DIR:-$INSTALL_DIR/whatsapp-bridge/store}"
-  [[ "$OLD_STORE" = /* ]] || OLD_STORE="$INSTALL_DIR/whatsapp-bridge/$OLD_STORE"
-  if [[ -d "$OLD_STORE" && ! "$OLD_STORE" -ef "$STORE_TARGET" ]] &&
-     { [[ ! -e "$STORE_TARGET" ]] || [[ -d "$STORE_TARGET" && -z "$(ls -A "$STORE_TARGET")" ]]; }; then
-    STORE_MIGRATION_PENDING=1
-    warn "Existing store found. Stop the bridge and back up the entire store before moving it. No data was moved."
-    echo "  Stop launchd: launchctl bootout gui/\$(id -u)/com.whatsapp-mcp.bridge"
-    echo "  Stop systemd: systemctl --user stop whatsapp-bridge"
-    echo "  For a manual bridge, stop its process first. Then:"
-    printf '  mkdir -p -- %q\n' "$(dirname "$STORE_TARGET")"
-    if [[ -d "$STORE_TARGET" ]]; then
-      printf '  rmdir -- %q\n' "$STORE_TARGET"
-    fi
-    printf '  mv -- %q %q\n' "$OLD_STORE" "$STORE_TARGET"
-    printf '  WHATSAPP_STORE_DIR=%q %q' "$STORE_TARGET" "$INSTALL_DIR/install.sh"
-    [[ "${WITH_SERVICE:-0}" -eq 0 ]] || printf ' --service'
-    [[ "${WITH_CODEX:-0}" -eq 0 ]] || printf ' --codex'
-    printf '\n'
-    echo "  Re-run the installer after moving the store, then start the bridge with start-bridge.sh or its service."
+STORE_TARGET="${STORE_DIR:-$INSTALL_DIR/whatsapp-bridge/store}"
+OLD_STORE="${PREVIOUS_STORE_DIR:-$INSTALL_DIR/whatsapp-bridge/store}"
+[[ "$OLD_STORE" = /* ]] || OLD_STORE="$INSTALL_DIR/whatsapp-bridge/$OLD_STORE"
+if [[ -d "$OLD_STORE" && ! "$OLD_STORE" -ef "$STORE_TARGET" ]] &&
+   { [[ ! -e "$STORE_TARGET" ]] || [[ -d "$STORE_TARGET" && -z "$(ls -A "$STORE_TARGET")" ]]; }; then
+  STORE_MIGRATION_PENDING=1
+  warn "Existing store found. Stop the bridge and back up the entire store before moving it. No data was moved."
+  echo "  Stop launchd: launchctl bootout gui/\$(id -u)/com.whatsapp-mcp.bridge"
+  echo "  Stop systemd: systemctl --user stop whatsapp-bridge"
+  echo "  For a manual bridge, stop its process first. Then:"
+  printf '  mkdir -p -- %q\n' "$(dirname "$STORE_TARGET")"
+  if [[ -d "$STORE_TARGET" ]]; then
+    printf '  rmdir -- %q\n' "$STORE_TARGET"
   fi
+  printf '  mv -- %q %q\n' "$OLD_STORE" "$STORE_TARGET"
+  printf '  WHATSAPP_STORE_DIR=%q %q' "$STORE_TARGET" "$INSTALL_DIR/install.sh"
+  [[ "${WITH_SERVICE:-0}" -eq 0 ]] || printf ' --service'
+  [[ "${WITH_CODEX:-0}" -eq 0 ]] || printf ' --codex'
+  printf '\n'
+  echo "  Re-run the installer after moving the store, then start the bridge with start-bridge.sh or its service."
 fi
 
 # ── build Go bridge ──────────────────────────────────────────────────────────

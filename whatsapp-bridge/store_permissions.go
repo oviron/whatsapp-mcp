@@ -1,13 +1,12 @@
 package main
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 )
-
-const pairingQRPath = "store/whatsapp-qr.png"
 
 func restrictPermissions(path string, mode fs.FileMode) error {
 	if runtime.GOOS == "windows" {
@@ -31,10 +30,13 @@ func privateDirectory(path string) error {
 }
 
 func prepareStore() error {
-	if err := privateDirectory("store"); err != nil {
+	if root := os.Getenv("WHATSAPP_STORE_DIR"); root != "" && !filepath.IsAbs(root) {
+		return errors.New("WHATSAPP_STORE_DIR must be an absolute path")
+	}
+	if err := privateDirectory(storePath()); err != nil {
 		return err
 	}
-	return filepath.WalkDir("store", func(path string, entry fs.DirEntry, err error) error {
+	return filepath.WalkDir(storePath(), func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -82,6 +84,7 @@ func updatePairingQR(png []byte) error {
 	qrState.png = png
 	qrState.connected = png == nil
 	qrState.Unlock()
+	pairingQRPath := storePath("whatsapp-qr.png")
 	if png != nil {
 		return privateFile(pairingQRPath, png)
 	}

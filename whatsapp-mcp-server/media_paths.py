@@ -4,8 +4,9 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from store_paths import STORE_DIR
+
 MAX_MEDIA_BYTES = 100 * 1024 * 1024
-STORE_DIR = Path(__file__).resolve().parent.parent / "whatsapp-bridge" / "store"
 
 
 class MediaPathError(ValueError):

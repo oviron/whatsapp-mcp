@@ -106,7 +106,7 @@ func readMediaFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, errMediaPath
 	}
-	store, err := filepath.Abs("store")
+	store, err := filepath.Abs(storePath())
 	if err != nil {
 		return nil, errMediaPath
 	}

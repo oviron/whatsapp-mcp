@@ -61,8 +61,8 @@ need go    "Install from https://go.dev/dl/"
 GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
 GO_MAJOR=$(echo "$GO_VERSION" | cut -d. -f1)
 GO_MINOR=$(echo "$GO_VERSION" | cut -d. -f2)
-if [[ "$GO_MAJOR" -lt 1 || ("$GO_MAJOR" -eq 1 && "$GO_MINOR" -lt 25) ]]; then
-  die "Go 1.25+ required (found $GO_VERSION). Update from https://go.dev/dl/"
+if [[ "$GO_MAJOR" -lt 1 || ("$GO_MAJOR" -eq 1 && "$GO_MINOR" -lt 26) ]]; then
+  die "Go 1.26+ required (found $GO_VERSION). Update from https://go.dev/dl/"
 fi
 success "Go $GO_VERSION"
 

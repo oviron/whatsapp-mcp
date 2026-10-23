@@ -15,14 +15,14 @@ A **personal-history MCP server for WhatsApp**: your own messages, searchable, s
 - Loopback bind by default; anything else needs a token. No new network surface without auth.
 - No secrets, phone numbers or personal paths in the repo.
 - Opt-in for anything that sends content to a third party (cloud transcription, TTS, webhooks) with a privacy note in the README. Nothing is sent by default.
-- Existing installs must keep working: schema changes are additive (`CREATE ... IF NOT EXISTS`), a re-sync never overwrites stored content, an edit never blanks a row.
+- Existing installs must keep working: schema changes are additive (`CREATE ... IF NOT EXISTS`, new columns), empty content from a re-sync never erases stored transcriptions, an edit never blanks a row.
 - A new MCP tool is registered with `@read_tool` or `@write_tool` (never a bare `@mcp.tool()`); anything that can change state under any argument is a write. A test enforces it.
 - Do not return raw bridge error text to MCP clients (paths leak with the remote transport).
 
 ## How to send a change
 1. Open the PR against `main` (never against another branch: GitHub closes it when that branch is deleted).
 2. Keep it small and single-purpose. Put new Go tests in a new `<feature>_test.go` and new Python tests in a new `test_<feature>.py` (they are discovered automatically), so parallel PRs do not conflict. List new MCP tools one name per line in `MCP_TOOLS` in `tests/e2e/e2e.py`.
-3. `cd whatsapp-bridge && go build -tags sqlite_fts5 ./... && go vet -tags sqlite_fts5 ./... && go test -tags sqlite_fts5 ./... && go test ./...` and `cd whatsapp-mcp-server && uv run python -m unittest discover -p 'test_*.py'` must pass. CI tests both SQLite modes.
+3. `cd whatsapp-bridge && go build -tags sqlite_fts5 ./... && go vet -tags sqlite_fts5 ./... && go test -tags sqlite_fts5 ./... && go test ./...` and `cd whatsapp-mcp-server && uv run python -m unittest discover -p 'test_*.py'` must pass. CI tests both SQLite modes and requires all Go files to be formatted with `gofmt`.
 4. The live end-to-end gate (`tests/e2e/`) needs two paired WhatsApp accounts, so it runs on the maintainer's side for maintainer PRs. See `tests/e2e/README.md`.
 
 ## What to expect

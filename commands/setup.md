@@ -22,7 +22,7 @@ Carry the resolved `INSTALL_DIR` / `BRIDGE_PORT` / `SERVER_NAME` from this step 
 
 Verify all three before installing anything. If any is missing, STOP — report which one and its install link. Do not partially install.
 
-- `go version` → must be 1.25 or newer. Missing/old: https://go.dev/dl/
+- `go version` → must be 1.26 or newer. Missing/old: https://go.dev/dl/
 - `uv --version` → any version. Missing: https://docs.astral.sh/uv/getting-started/installation/
 - `git --version` → any version. Missing: https://git-scm.com/downloads
 
@@ -61,7 +61,7 @@ Open `http://localhost:<resolved BRIDGE_PORT>/qr` in the user's default browser 
 
 - The bridge listens on loopback only by design. On a headless/remote machine, `open`/`xdg-open` won't reach the user's actual browser — tell them to port-forward instead: `ssh -L <port>:localhost:<port> <host>` and open the URL locally themselves.
 
-Tell the user to scan it with WhatsApp (Settings → Linked Devices → Link a Device). Don't wait for them to say "done" — poll for it yourself: `curl -s http://localhost:<port>/qr` and check whether the response contains `WhatsApp connected` (the page's own success-state text) instead of the QR page. Poll every ~5s, up to the same 3-minute window the bridge itself waits before giving up on the pairing session (past that, tell the user the QR expired and to re-run this step — a fresh page load gets a new one).
+Tell the user to scan it with WhatsApp (Settings → Linked Devices → Link a Device). Don't wait for them to say "done" — poll for it yourself: `curl -s http://localhost:<port>/qr` and check whether the response contains `WhatsApp connected` (the page's own success-state text) instead of the QR page. Poll every ~5s, up to the same 3-minute window the bridge itself waits before giving up on the pairing session (past that the bridge exits and the service restarts it with a new QR: tell the user the QR expired and reload the page).
 
 ## 4. Register the MCP server in Claude Code
 

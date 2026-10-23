@@ -14,9 +14,9 @@ Transforma voice messages em `content` pesquisável. **Opt-in** — desligado at
 ## Armadilhas
 
 - **medium transcreve foneticamente** ("Proteus" vs "Protheus"). **large-v3** é melhor pra jargão de domínio (ex.: TOTVS/Protheus/ADVPL).
-- `write_content` usa `UPDATE` (não INSERT OR REPLACE) — seguro. O que apaga transcrição é o **bridge no history sync** (ver bridge-go).
+- `write_content` usa `UPDATE`; o history sync da bridge preserva transcrições quando recebe conteúdo vazio (`StoreMessage` com `ON CONFLICT`/`COALESCE`). Apagar `messages.db` perde esse enriquecimento local.
 - Três estados de content: texto real / sentinela / '' (vazio = retry no próximo sweep).
-- `CDN_EXPIRY = 21 dias`. `_is_expired(ts)` discrimina falha transitória vs permanente. None/unparseable = assumido expirado (não deixa row em retry eterno).
+- `CDN_EXPIRY = 21 dias`. Só `dl_reason == "media_gone"` junto com `_is_expired(ts)` grava sentinela permanente; falhas transitórias ficam para retry. None/unparseable = assumido expirado.
 
 ## Fluxos
 
@@ -26,5 +26,5 @@ Transforma voice messages em `content` pesquisável. **Opt-in** — desligado at
 
 ## Importante para scripts
 
-- Scripts são processos separados → leem env do **próprio shell**. `source transcription.env` antes de rodar (o env da bridge não chega neles).
+- Scripts são processos separados → leem env do **próprio shell**. `set -a; source transcription.env; set +a` antes de rodar (o env da bridge não chega neles).
 - Testes: `test_transcribe.py` (`_is_expired`, `_strip_accents`).

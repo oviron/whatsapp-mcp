@@ -66,6 +66,17 @@ func (l *sendLimiter) retry(first bool) time.Duration {
 	return max(0, time.Until(next))
 }
 
+// The queue stayed busy past the wait budget; Retry-After must still cover first-contact pacing.
+func (l *sendLimiter) busy(ctx context.Context, firstContact func(context.Context) (bool, error)) error {
+	if l.firstInterval == 0 {
+		return &sendRateError{l.retry(false)}
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	first, err := firstContact(checkCtx)
+	return &sendRateError{l.retry(first || err != nil)}
+}
+
 // Keep the turn through sending and persistence: a parallel request must see the first send in history.
 func (l *sendLimiter) acquire(ctx context.Context, firstContact func(context.Context) (bool, error)) (func(), error) {
 	if err := ctx.Err(); err != nil {
@@ -83,7 +94,7 @@ func (l *sendLimiter) acquire(ctx context.Context, firstContact func(context.Con
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		return nil, &sendRateError{l.retry(false)}
+		return nil, l.busy(ctx, firstContact)
 	}
 	release := func() { <-l.gate }
 	first := false
@@ -93,7 +104,7 @@ func (l *sendLimiter) acquire(ctx context.Context, firstContact func(context.Con
 		if err != nil {
 			release()
 			if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
-				return nil, &sendRateError{l.retry(false)}
+				return nil, &sendRateError{l.retry(true)} // unknown contact: assume first
 			}
 			return nil, err
 		}

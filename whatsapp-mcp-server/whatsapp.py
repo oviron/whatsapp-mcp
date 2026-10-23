@@ -22,6 +22,11 @@ WHATSAPP_API_BASE_URL = os.environ.get(
 WHATSAPP_API_AUTH_TOKEN = os.environ.get("WHATSAPP_API_AUTH_TOKEN", "")
 
 REQUEST_TIMEOUT = 30
+# The bridge waits up to 75 s for WhatsApp to acknowledge a message or a new group,
+# so a shorter client timeout would report a failure for something that happened.
+SEND_TIMEOUT = 120
+# Media is uploaded or downloaded inside the same request.
+MEDIA_TIMEOUT = 300
 
 # Cache of sender_jid -> resolved name, avoids one HTTP round trip per message
 # when formatting a batch of messages (format_message is called per-message).
@@ -444,7 +449,7 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
             "message": message,
         }
 
-        response = requests.post(url, json=payload, headers=_auth_headers())
+        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=SEND_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -453,6 +458,8 @@ def send_message(recipient: str, message: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except requests.ReadTimeout:
+        return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -478,7 +485,7 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
 
-        response = requests.post(url, json=payload, headers=_auth_headers())
+        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -487,6 +494,8 @@ def send_file(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except requests.ReadTimeout:
+        return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -518,7 +527,7 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
             "media_path": media_path
         }
 
-        response = requests.post(url, json=payload, headers=_auth_headers())
+        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -527,6 +536,8 @@ def send_audio_message(recipient: str, media_path: str) -> Tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except requests.ReadTimeout:
+        return False, "The bridge did not answer in time; the message may still be sent, check the chat before retrying"
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -583,7 +594,7 @@ def download_media(message_id: str, chat_jid: str) -> Optional[str]:
             "chat_jid": chat_jid
         }
 
-        response = requests.post(url, json=payload, headers=_auth_headers())
+        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=MEDIA_TIMEOUT)
 
         if response.status_code == 200:
             result = response.json()
@@ -633,7 +644,7 @@ def create_group(
             "is_community": is_community,
             "community_parent_jid": community_parent_jid,
         }
-        response = requests.post(url, json=payload, headers=_auth_headers())
+        response = requests.post(url, json=payload, headers=_auth_headers(), timeout=SEND_TIMEOUT)
         try:
             result = response.json()
         except json.JSONDecodeError:
@@ -646,6 +657,8 @@ def create_group(
             "participant_count": result.get("participant_count"),
         } if success else None
         return success, message, details
+    except requests.ReadTimeout:
+        return False, "The bridge did not answer in time; the group may still be created, check before retrying", None
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}", None
     except Exception as e:

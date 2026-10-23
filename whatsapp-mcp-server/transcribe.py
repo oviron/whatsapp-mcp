@@ -42,7 +42,7 @@ from store_paths import STORE_DIR
 CDN_EXPIRY = timedelta(days=21)
 
 DB_PATH = str(STORE_DIR / "messages.db")
-API_BASE = os.environ.get("WHATSAPP_API_BASE_URL", f"http://localhost:{os.environ.get('WHATSAPP_BRIDGE_PORT', '8080')}/api")
+API_BASE = os.environ.get("WHATSAPP_API_BASE_URL", f"http://localhost:{os.environ.get('WHATSAPP_BRIDGE_PORT') or '8080'}/api")
 WHATSAPP_API_AUTH_TOKEN = os.environ.get("WHATSAPP_API_AUTH_TOKEN", "")
 
 

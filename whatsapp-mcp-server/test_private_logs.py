@@ -30,7 +30,7 @@ class PrivateLogsTest(unittest.TestCase):
                 self.assertEqual("PRIVATE TRANSCRIPT" in output.getvalue(), flag.strip().lower() in ("1", "true", "yes", "on"))
                 self.assertIn("18", output.getvalue())
 
-    def test_download_logs_keep_reason_but_hide_urls(self):
+    def test_download_logs_keep_status_without_echoing_error_content(self):
         secret = "connection refused: https://media.invalid/SECRET"
         for flag in ("", "0", "false", "1", "true", "yes", "on", " TRUE "):
             for status in (200, 500):
@@ -40,9 +40,10 @@ class PrivateLogsTest(unittest.TestCase):
                      patch.dict(os.environ, {"WHATSAPP_LOG_CONTENT": flag}), \
                      patch.object(whatsapp.requests, "post", return_value=response), \
                      self.assertLogs(whatsapp.logger, level="WARNING") as logs:
-                    self.assertIsNone(whatsapp.download_media("msg", "chat"))
+                    with self.assertRaises(whatsapp.BridgeError):
+                        whatsapp.download_media("msg", "chat")
                 self.assertNotIn(secret, " ".join(logs.output))
-                self.assertIn("connection refused", " ".join(logs.output))
+                self.assertIn(f"HTTP {status}", " ".join(logs.output))
 
     def test_tts_body_is_hidden_but_cli_stderr_is_logged(self):
         secret = "PRIVATE MESSAGE MediaKey=PRIVATE_KEY https://media.invalid/SECRET"

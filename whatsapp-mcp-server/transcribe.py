@@ -132,10 +132,18 @@ def _is_expired(ts):
     return datetime.now(timezone.utc) - dt > CDN_EXPIRY
 
 
+# Audio you sent yourself is not transcribed unless TRANSCRIBE_OUTGOING=1: with
+# a cloud engine that would ship voice notes off the machine that the user never
+# asked to transcribe.
+TRANSCRIBE_OUTGOING = os.environ.get("TRANSCRIBE_OUTGOING", "") == "1"
+
+
 def pending_audios(conn, limit=None):
     sql = ("SELECT id, chat_jid, hex(file_sha256), file_length, timestamp FROM messages "
-           "WHERE media_type='audio' AND (content IS NULL OR content='') "
-           "ORDER BY julianday(timestamp) DESC, rowid DESC")
+           "WHERE media_type='audio' AND (content IS NULL OR content='') ")
+    if not TRANSCRIBE_OUTGOING:
+        sql += "AND COALESCE(is_from_me, 0) = 0 "
+    sql += "ORDER BY julianday(timestamp) DESC, rowid DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql).fetchall()
@@ -154,6 +162,8 @@ def download(message_id, chat_jid):
         body = r.json()
     except ValueError:
         return None, f"HTTP {r.status_code}: {r.text[:120]}", None
+    if not isinstance(body, dict):
+        return None, f"HTTP {r.status_code}: unexpected body", None
     if r.status_code == 200 and body.get("success"):
         return body.get("path"), None, None
     return None, body.get("message", f"HTTP {r.status_code}"), body.get("reason")

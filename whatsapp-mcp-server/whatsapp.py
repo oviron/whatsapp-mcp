@@ -160,6 +160,8 @@ def _bridge_result(response: requests.Response, require_success: bool = False) -
                     retry = int(retry)
             if type(retry) in (int, float) and 0 <= retry < 1e9 and math.isfinite(retry):
                 reason = f"Bridge rate limit reached; retry in {retry:g} seconds"
+        if isinstance(result, dict) and result.get("reason") == "media_gone":
+            reason = "Media is no longer available on WhatsApp's servers"
         raise BridgeError(f"{reason} (HTTP {status})")
     if invalid_json:
         logger.warning("Bridge returned invalid JSON: HTTP %s", status)

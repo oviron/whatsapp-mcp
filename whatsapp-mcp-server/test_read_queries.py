@@ -1,6 +1,7 @@
 import sqlite3
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 import clone_voice
@@ -26,6 +27,7 @@ class ReadQueriesTest(unittest.TestCase):
         self.conn.commit()
 
     def test_pending_audios(self):
+        self.enterContext(unittest.mock.patch.object(transcribe, "TRANSCRIBE_OUTGOING", True))
         self.assertEqual([r[0] for r in transcribe.pending_audios(self.conn, 3)], ["new", "tie", "target"])
 
     def test_unavailable_audios(self):

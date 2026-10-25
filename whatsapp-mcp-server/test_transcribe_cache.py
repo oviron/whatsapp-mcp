@@ -21,7 +21,8 @@ class TranscribeCacheTest(unittest.TestCase):
         self.db = self.root / "messages.db"
         with sqlite3.connect(self.db) as conn:
             conn.execute("CREATE TABLE messages (id TEXT, chat_jid TEXT, content TEXT, "
-                         "media_type TEXT, file_sha256 BLOB, file_length INTEGER, timestamp TEXT)")
+                         "media_type TEXT, file_sha256 BLOB, file_length INTEGER, timestamp TEXT, "
+                         "is_from_me BOOLEAN DEFAULT 0)")
         for module in (transcribe, recover_audios):
             self.enterContext(patch.object(module, "DB_PATH", str(self.db)))
             self.enterContext(patch.object(module, "log"))
@@ -35,7 +36,8 @@ class TranscribeCacheTest(unittest.TestCase):
               content="", timestamp="2000-01-01T00:00:00Z"):
         digest = hashlib.sha256(data).digest() if sha else None
         with sqlite3.connect(self.db) as conn:
-            conn.execute("INSERT INTO messages VALUES (?, 'chat', ?, 'audio', ?, ?, ?)",
+            conn.execute("INSERT INTO messages (id, chat_jid, content, media_type, file_sha256, file_length, timestamp) "
+                         "VALUES (?, 'chat', ?, 'audio', ?, ?, ?)",
                          (msg_id, content, digest, len(data) if length is None else length, timestamp))
         path = self.root / "chat" / (msg_id + "_audio.ogg")
         path.parent.mkdir(exist_ok=True)

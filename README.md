@@ -145,6 +145,8 @@ Optional, for both engines:
 - `TRANSCRIPTION_TIMEOUT` — seconds one local whisper run may take before that audio counts as failed and the sweep moves on (default `600`; ffmpeg gets 120 s).
 - `TRANSCRIPTION_PROMPT` — biases transcription toward correct punctuation and domain terms. For `pt`, the default is `A seguir, a transcrição de um áudio. A transcrição deve ser precisa, com pontuação e capitalização corretas.` Other languages and `auto` have no default prompt. Set this variable to override the prompt for any language; an empty value (`TRANSCRIPTION_PROMPT=""`) disables it. Write prompts in the language of the audios.
 
+Voice notes **you sent** are skipped by default (an API engine would otherwise upload audio you never asked to transcribe). Set `TRANSCRIBE_OUTGOING=1` to include them, e.g. for `/whats:clone`, which reads transcripts of your own audio.
+
 **Where these vars must live** depends on how the bridge starts — the 5-minute sweep inherits the bridge process's environment, *not* your interactive shell's:
 - **`go run -tags sqlite_fts5 .` / running `./whatsapp-bridge` by hand** — `export` them in the same shell first, or prefix the command.
 - **`start-bridge.sh` (from `install.sh`) or macOS launchd auto-start** — `export` in your shell will **not** reach launchd. Instead create `~/.whatsapp-mcp/transcription.env` with owner-only permissions (`umask 077` before creating it, `chmod 600` if it already exists) and the vars (one `export VAR=value` per line); `start-bridge.sh` sources it, so both the manual launcher and launchd pick them up.

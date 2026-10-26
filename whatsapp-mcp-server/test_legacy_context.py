@@ -16,7 +16,7 @@ class LegacyContextTest(unittest.TestCase):
         with patch("whatsapp._api_post", side_effect=replies) as post, \
                 patch("whatsapp.get_sender_name", return_value="Alice"):
             output = whatsapp.list_messages(context_before=2, context_after=3)
-        self.assertEqual([line.rsplit(": ", 1)[-1] for line in output.splitlines()],
+        self.assertEqual([line.rsplit("] ", 1)[-1] for line in output.splitlines()],
                          ["before", "target", "after", "after", "other"])
         self.assertEqual(post.call_count, 3)
         self.assertEqual(post.call_args_list[1].args, (
@@ -33,7 +33,7 @@ class LegacyContextTest(unittest.TestCase):
         with patch("whatsapp._api_post", side_effect=[{"messages": [message("target")]}, {}]), \
                 patch("whatsapp.get_sender_name", return_value="Alice"):
             output = whatsapp.list_messages()
-        self.assertIn("From: Alice: target\n", output)
+        self.assertIn("From: Alice: [Message ID: target - Chat JID: chat@lid] target\n", output)
         self.assertIn("context lookup failed for 1 message(s)", output)
         self.assertIn("Message with ID target not found", output)
 

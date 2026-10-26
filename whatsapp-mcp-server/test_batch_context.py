@@ -23,13 +23,13 @@ class BatchContextTest(unittest.TestCase):
             "include_context": True, "context_before": 2, "context_after": 3,
         })
         self.assertEqual(output,
-                         "[2026-10-01 08:00:00] Chat: Chat From: Alice: before\n"
+                         "[2026-10-01 08:00:00] Chat: Chat From: Alice: [Message ID: before - Chat JID: chat@lid] before\n"
                          "[2026-10-01 08:00:00] Chat: Chat From: Alice: [image - Message ID: target - Chat JID: chat@lid] target\n"
-                         "[2026-10-01 08:00:00] Chat: Chat From: Alice: after\nReactions: ok (Alice)\n")
+                         "[2026-10-01 08:00:00] Chat: Chat From: Alice: [Message ID: after - Chat JID: chat@lid] after\nReactions: ok (Alice)\n")
 
     def test_without_context(self):
         with patch("whatsapp._api_post", return_value={"messages": [message("target", is_from_me=True)]}) as post:
-            self.assertIn("From: Me: target", whatsapp.list_messages(include_context=False))
+            self.assertIn("From: Me: [Message ID: target - Chat JID: chat@lid] target", whatsapp.list_messages(include_context=False))
         post.assert_called_once()
         self.assertFalse(post.call_args.args[1].get("include_context", False))
 

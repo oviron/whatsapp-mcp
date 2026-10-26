@@ -28,7 +28,7 @@ class ChatBackfillTest(unittest.TestCase):
     def test_bridge_errors_reach_the_caller(self):
         for status, body, expected in [
                 (404, {"error": "No stored messages for this chat"}, "No stored messages"),
-                (500, {"error": "Failed to request chat history from phone: timed out"}, "timed out"),
+                (500, {"error": "Failed to request chat history from phone"}, "Failed to request chat history"),
                 (401, {}, "HTTP 401"),
                 (200, {"success": False, "message": "refused"}, "refused"),
                 (200, [], "unexpected response")]:

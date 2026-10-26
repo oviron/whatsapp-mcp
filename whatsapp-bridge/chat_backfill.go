@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -53,13 +54,15 @@ func handleChatBackfill(client historySyncClient, store *MessageStore) http.Hand
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "Failed to read oldest stored message: "+err.Error())
+			fmt.Printf("Chat backfill: failed to read oldest stored message: %v\n", err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to read oldest stored message")
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 75*time.Second)
 		defer cancel()
 		if err := requestHistorySync(ctx, client, &oldest, req.Count); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "Failed to request chat history from phone: "+err.Error())
+			fmt.Printf("Chat backfill: failed to request chat history from phone: %v\n", err)
+			writeJSONError(w, http.StatusInternalServerError, "Failed to request chat history from phone")
 			return
 		}
 		writeJSON(w, MarkChatResponse{Success: true, Message: "History requested from phone; messages arrive asynchronously. Use list_messages to check for earlier history"})

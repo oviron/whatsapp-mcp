@@ -29,7 +29,7 @@ class ChatBackfillTest(unittest.TestCase):
         no_history = "No stored messages for this chat; cannot request earlier history"
         for status, body, expected in [
                 (404, {"error": no_history}, no_history + " (HTTP 404)"),
-                (500, {"error": "Failed to request chat history from phone: timed out"}, "HTTP 500"),
+                (500, {"error": "Failed to request chat history from phone"}, "HTTP 500"),
                 (401, {}, "HTTP 401"),
                 (200, {"success": False, "message": "refused"}, "operation failed"),
                 (200, [], "invalid response")]:

@@ -128,7 +128,7 @@ func TestChatBackfillFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			handleChatBackfill(tc.client, s)(rec, httptest.NewRequest("POST", "/api/chat/backfill", strings.NewReader(`{"chat_jid":"111@s.whatsapp.net","count":1}`)))
-			if rec.Code != tc.want || (tc.client.err != nil && !strings.Contains(rec.Body.String(), "phone offline")) {
+			if rec.Code != tc.want || strings.Contains(rec.Body.String(), "phone offline") {
 				t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 			}
 		})
@@ -139,7 +139,7 @@ func TestChatBackfillFailures(t *testing.T) {
 	c := &backfillClient{connected: true}
 	rec := httptest.NewRecorder()
 	handleChatBackfill(c, s)(rec, httptest.NewRequest("POST", "/api/chat/backfill", strings.NewReader(`{"chat_jid":"111@s.whatsapp.net","count":1}`)))
-	if rec.Code != 500 || c.sent != nil {
+	if rec.Code != 500 || c.sent != nil || strings.Contains(rec.Body.String(), "closed") {
 		t.Fatalf("database failure: %d, sent %v", rec.Code, c.sent)
 	}
 }

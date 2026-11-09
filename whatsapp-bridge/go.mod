@@ -9,7 +9,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/mdp/qrterminal v1.0.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
-	go.mau.fi/whatsmeow v0.0.0-20261028111316-d24d079a3755
+	go.mau.fi/whatsmeow v0.0.0-20261107160454-79dc2a8c33df
 	golang.org/x/text v0.43.0
 	google.golang.org/protobuf v1.36.12
 )

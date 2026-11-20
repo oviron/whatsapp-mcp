@@ -119,6 +119,9 @@ class AllToolBridgeErrors(unittest.IsolatedAsyncioTestCase):
             if tool.name == "update_group_settings":
                 arguments["name"] = "test"
             for mock_args, expected in cases:
+                if tool.name == "get_message_context" and expected == "Invalid bridge request":
+                    # The bridge answers an unknown message ID with HTTP 400.
+                    expected = "not found"
                 with self.subTest(tool=tool.name, expected=expected), \
                      patch("whatsapp.requests.post", **mock_args) as post, \
                      patch("whatsapp.requests.request", **mock_args) as request, \

@@ -107,6 +107,10 @@ _sender_name_cache: Dict[str, str] = {}
 class BridgeError(RuntimeError):
     """A bridge failure safe to show to MCP clients."""
 
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
+
 
 def _auth_headers() -> Dict[str, str]:
     if WHATSAPP_API_AUTH_TOKEN:
@@ -162,7 +166,7 @@ def _bridge_result(response: requests.Response, require_success: bool = False) -
                 reason = f"Bridge rate limit reached; retry in {retry:g} seconds"
         if isinstance(result, dict) and result.get("reason") == "media_gone":
             reason = "Media is no longer available on WhatsApp's servers"
-        raise BridgeError(f"{reason} (HTTP {status})")
+        raise BridgeError(f"{reason} (HTTP {status})", status)
     if invalid_json:
         logger.warning("Bridge returned invalid JSON: HTTP %s", status)
         raise BridgeError("Bridge returned invalid JSON")
@@ -396,11 +400,17 @@ def get_message_context(
     after: int = 5
 ) -> MessageContext:
     """Get context around a specific message."""
-    result = _api_post("/message_context", {
-        "message_id": message_id,
-        "before": before,
-        "after": after,
-    })
+    try:
+        result = _api_post("/message_context", {
+            "message_id": message_id,
+            "before": before,
+            "after": after,
+        })
+    except BridgeError as e:
+        # The bridge answers an unknown message ID with HTTP 400; that is "not found", not a bridge failure.
+        if e.status in (400, 404):
+            raise ValueError(f"Message with ID {message_id} not found") from None
+        raise
 
     msg_data = result.get("message")
     if not msg_data:

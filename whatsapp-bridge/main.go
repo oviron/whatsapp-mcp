@@ -3964,6 +3964,10 @@ func requireBearerToken(token string, next http.Handler) http.Handler {
 func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
+	opts, err := parseBridgeOptions(os.Args[1:])
+	if err != nil {
+		os.Exit(2)
+	}
 	logger.Infof("Starting WhatsApp client...")
 
 	// Create database connection for storing session data
@@ -4018,6 +4022,18 @@ func main() {
 	client.SynchronousAck = true
 	client.EnableDecryptedEventBuffer = true
 	client.UseRetryMessageStore = true
+
+	if opts.logout {
+		if unlinked, err := logoutBridge(whatsmeowSession{client}); err != nil {
+			logger.Errorf("Logout failed: %v", err)
+			os.Exit(1)
+		} else if unlinked {
+			fmt.Println("Logged out: this device is unlinked and its session removed. Start the bridge again to pair.")
+		} else {
+			fmt.Println("Not paired: nothing to log out.")
+		}
+		os.Exit(0)
+	}
 
 	// Initialize message store
 	messageStore, err := NewMessageStore()
@@ -4092,11 +4108,27 @@ func main() {
 			os.Exit(1)
 		}
 
-		fmt.Printf("\nOpen http://localhost:%d/qr in your browser to scan the QR code.\n", bridgePort)
+		if opts.pairPhone == "" {
+			fmt.Printf("\nOpen http://localhost:%d/qr in your browser to scan the QR code.\n", bridgePort)
+		}
 
 		// Print QR code for pairing with phone
+		prompt := pairingPrompt{phone: opts.pairPhone, request: func(phone string) (string, error) {
+			return client.PairPhone(context.Background(), phone, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+		}}
 		for evt := range qrChan {
 			if evt.Event == "code" {
+				code, showQR, err := prompt.onQR()
+				if err != nil {
+					logger.Errorf("Pairing code request failed (%v); showing a QR code instead", err)
+					fmt.Printf("\nOpen http://localhost:%d/qr in your browser to scan the QR code.\n", bridgePort)
+				}
+				if code != "" {
+					fmt.Printf("\nPairing code: %s\nOn the phone: WhatsApp → Linked devices → Link a device → Link with phone number instead.\n", code)
+				}
+				if !showQR {
+					continue
+				}
 				fmt.Println("\nScan this QR code with your WhatsApp app:")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 

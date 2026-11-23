@@ -4905,7 +4905,7 @@ func startTranscriptionSweep(interval time.Duration) {
 			}
 			// The lockfile is the only overlap guard; if we can't write it,
 			// don't leave a process running unguarded — kill it and retry next tick.
-			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644); err != nil {
+			if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0o600); err != nil {
 				fmt.Printf("transcription sweep: cannot write lockfile (%v); killing sweep to preserve overlap guard\n", err)
 				_ = cmd.Process.Kill()
 				_ = cmd.Wait()

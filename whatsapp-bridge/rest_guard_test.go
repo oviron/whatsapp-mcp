@@ -64,6 +64,23 @@ func TestAPIGuardWithoutTokenRefusesBrowserRequests(t *testing.T) {
 	}
 }
 
+// A cross-site GET (<img src>, a link) need not carry Origin; Sec-Fetch-Site still names it.
+func TestAPIGuardWithoutTokenRefusesCrossSiteFetch(t *testing.T) {
+	h := apiGuard("", "127.0.0.1", 8080, false, guardedMux())
+	for site, want := range map[string]int{"": 200, "none": 200, "same-origin": 200, "same-site": 403, "cross-site": 403} {
+		req := httptest.NewRequest(http.MethodGet, "/api/messages", nil)
+		req.Host = "127.0.0.1:8080"
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("Sec-Fetch-Site=%q: got %d want %d", site, rec.Code, want)
+		}
+	}
+}
+
 func TestAPIGuardTokenIsTheWholeCheck(t *testing.T) {
 	h := apiGuard("s3cret", "100.64.0.1", 8080, false, guardedMux())
 	if got := guardCode(h, "/api/send", "bridge:8080", "", "Bearer s3cret", "{}"); got != 200 {

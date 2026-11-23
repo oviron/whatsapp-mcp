@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"runtime/debug"
@@ -18,17 +19,35 @@ const (
 	streamReplacedMaxPause = 30 * time.Minute
 	logoutPollInterval     = 500 * time.Millisecond
 	logoutDeleteTimeout    = 30 * time.Second
+	forceReconnectCooldown = 2 * time.Minute // repeated connects are a ban risk
+	unpairExitDelay        = 2 * time.Second // lets the panel answer the browser before the process exits
+)
+
+var (
+	errReconnectStopped  = errors.New("the session needs a person (new QR or a rebuild)")
+	errReconnectHeld     = errors.New("WhatsApp asked this client to wait")
+	errReconnectCooldown = errors.New("reconnected a moment ago")
+	errUnpairOffline     = errors.New("unpairing needs a live WhatsApp connection")
 )
 
 type sessionClient interface {
 	Connect() error
+	Disconnect()
 	IsConnected() bool
 	IsPaired() bool
+	Unpair() error
 }
 
 type whatsmeowSession struct{ *whatsmeow.Client }
 
 func (c whatsmeowSession) IsPaired() bool { return c.Store.ID != nil }
+
+// Unpair removes this device from the account on WhatsApp's side and deletes the local session.
+func (c whatsmeowSession) Unpair() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return c.Logout(ctx)
+}
 
 // connectionSupervisor handles the disconnects whatsmeow does not come back from on its own
 // (stream replaced, ban, outdated client, logout), and a watchdog reconnects a paired client
@@ -48,6 +67,7 @@ type connectionSupervisor struct {
 	stopped       bool      // needs a person (rebuild, new QR); reconnecting would only repeat the refusal
 	replacedPause time.Duration
 	lastReplaced  time.Time
+	lastForced    time.Time
 }
 
 func newConnectionSupervisor(client *whatsmeow.Client, log waLog.Logger, sessionDeleted func() bool, deleteSession func() error) *connectionSupervisor {
@@ -179,6 +199,58 @@ func (s *connectionSupervisor) reconnect() {
 	if err := s.session.Connect(); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
 		s.log.Warnf("Reconnect failed: %v", err)
 	}
+}
+
+// holdLeft is how long the current pause (ban, second client) still runs; 0 when none.
+func (s *connectionSupervisor) holdLeft() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return max(s.holdUntil.Sub(s.now()), 0)
+}
+
+// forceReconnect drops and reopens the connection of the paired session, for the person who sees
+// "connected" but no new messages: reconnect() does nothing while the socket looks alive. It never
+// unpairs, and it refuses while WhatsApp asked to wait or right after a previous forced reconnect.
+func (s *connectionSupervisor) forceReconnect() (wait time.Duration, err error) {
+	if s.isStopped() || !s.session.IsPaired() {
+		return 0, errReconnectStopped
+	}
+	s.mu.Lock()
+	if left := s.holdUntil.Sub(s.now()); left > 0 {
+		s.mu.Unlock()
+		return left, errReconnectHeld
+	}
+	if left := forceReconnectCooldown - s.now().Sub(s.lastForced); left > 0 {
+		s.mu.Unlock()
+		return left, errReconnectCooldown
+	}
+	s.lastForced = s.now()
+	s.mu.Unlock()
+	s.log.Warnf("Reconnect requested from the status page")
+	s.session.Disconnect()
+	if err := s.session.Connect(); err != nil && !errors.Is(err, whatsmeow.ErrAlreadyConnected) {
+		return 0, err
+	}
+	return 0, nil
+}
+
+// unpair unlinks this device at the owner's request and exits so the service manager restarts the
+// bridge into a new QR code. Stored messages stay. It needs a live connection: deleting the local
+// session without telling WhatsApp would leave a dead device listed on the phone.
+func (s *connectionSupervisor) unpair() error {
+	if s.isStopped() || !s.session.IsPaired() || !s.session.IsConnected() {
+		return errUnpairOffline
+	}
+	if err := s.session.Unpair(); err != nil && s.session.IsConnected() {
+		return err // WhatsApp did not take the request; nothing changed
+	}
+	// Still here with an error: the device is unlinked but the local delete failed; exitAfterLogout retries it.
+	s.mu.Lock()
+	s.stopped = true
+	s.mu.Unlock()
+	s.log.Warnf("Unpaired from the status page; exiting so the service manager restarts the bridge with a new QR code")
+	s.after(unpairExitDelay, func() { s.exitAfterLogout(0) })
+	return nil
 }
 
 func (s *connectionSupervisor) watch(interval time.Duration) {

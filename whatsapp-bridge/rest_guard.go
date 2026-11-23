@@ -43,6 +43,7 @@ var readOnlyAPI = map[string]bool{
 // which includes web pages: a cross-site POST (CSRF) or a DNS-rebinding page that resolves its own name to
 // 127.0.0.1. Browsers always send Origin on a cross-origin POST, and a rebinding page keeps its own Host,
 // so tokenless requests must come without an Origin and name a loopback host or the bind address.
+// A cross-site GET (an <img> or a navigation) may carry no Origin, so Sec-Fetch-Site is checked too.
 func apiGuard(token, bindAddr string, port int, readOnly bool, next http.Handler) http.Handler {
 	allowedHosts := map[string]bool{}
 	for _, h := range []string{"127.0.0.1", "localhost", "::1", bindAddr} {
@@ -62,7 +63,7 @@ func apiGuard(token, bindAddr string, port int, readOnly bool, next http.Handler
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
-		} else if r.Header.Get("Origin") != "" || !allowedHosts[r.Host] {
+		} else if r.Header.Get("Origin") != "" || crossSiteFetch(r) || !allowedHosts[r.Host] {
 			http.Error(w, "Forbidden: browser requests and foreign Host headers are refused without API_AUTH_TOKEN", http.StatusForbidden)
 			return
 		}
@@ -73,6 +74,13 @@ func apiGuard(token, bindAddr string, port int, readOnly bool, next http.Handler
 		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// crossSiteFetch reports a request a browser made on behalf of another page: Sec-Fetch-Site other than
+// none (typed by the user) or same-origin. Programs do not send the header.
+func crossSiteFetch(r *http.Request) bool {
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site != "" && site != "none" && site != "same-origin"
 }
 
 func envBool(name string) bool {

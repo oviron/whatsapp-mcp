@@ -3491,8 +3491,8 @@ func handleHealthz(connected func() bool) http.HandlerFunc {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
-	http.HandleFunc("/status", handleStatus(func() statusInfo {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, supervisor *connectionSupervisor, port int) {
+	statusPanel := newPanel(os.Getenv("API_AUTH_TOKEN"), os.Getenv("MCP_PUBLIC_URL"), func() statusInfo {
 		qrState.RLock()
 		hasQR := qrState.png != nil
 		qrState.RUnlock()
@@ -3500,10 +3500,15 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			HasQR: hasQR, Uptime: time.Since(startedAt).Round(time.Second).String()}
 		if client != nil && client.Store.ID != nil {
 			si.Account = maskAccount(client.Store.ID.User)
+			si.Paired = true
 		}
-		si.Messages, si.LastMsg = lastMessage(messageStore.db)
+		si.Messages, si.LastMsg, si.LastMsgAt = lastMessageAt(messageStore.db)
+		si.Pairing, si.LoggedOutAt = pairingNow(time.Now()), loggedOutAt()
+		si.Held, si.Stopped = supervisor.holdLeft(), supervisor.isStopped()
 		return si
-	}))
+	}, supervisor)
+	statusPanel.db, statusPanel.set, statusPanel.oauthDB = messageStore.db, appSettings, os.Getenv("MCP_OAUTH_DB")
+	statusPanel.register(http.DefaultServeMux)
 
 	http.HandleFunc("/healthz", handleHealthz(func() bool {
 		return client != nil && client.IsConnected() && client.IsLoggedIn()
@@ -4240,7 +4245,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	if readOnly {
 		fmt.Println("REST API is read-only (API_READONLY=true)")
 	}
-	finalHandler := apiGuard(authToken, bindAddr, port, readOnly, http.DefaultServeMux)
+	finalHandler := apiGuard(authToken, bindAddr, port, readOnly, stampAPIAccess(readOnlyGuard(appSettings, http.DefaultServeMux)))
 
 	// Bind before connecting to WhatsApp: a taken port must stop the bridge (and let launchd/systemd retry),
 	// not leave it running without its API.
@@ -4279,6 +4284,10 @@ func main() {
 	// Create directory for database if it doesn't exist
 	if err := prepareStore(); err != nil {
 		logger.Errorf("Failed to create store directory: %v", err)
+		os.Exit(1)
+	}
+	if appSettings, err = loadSettings(settingsPath); err != nil {
+		fmt.Printf("FATAL: cannot read the panel settings (%v). Fix or remove the file; refusing to start without them.\n", err)
 		os.Exit(1)
 	}
 
@@ -4357,6 +4366,9 @@ func main() {
 		return err == nil && len(devices) == 0
 	}, func() error { return client.Store.Delete(context.Background()) })
 	client.AddEventHandlerWithSuccessStatus(failOnPanic(logger, func(evt any) bool {
+		if _, ok := evt.(*events.LoggedOut); ok {
+			markLoggedOut() // before the supervisor, which may exit right away
+		}
 		supervisor.handle(evt)
 		switch v := evt.(type) {
 		case *events.Message:
@@ -4374,6 +4386,7 @@ func main() {
 			}
 		case *events.HistorySync:
 			// Process history sync events
+			lastHistoryUnix.Store(time.Now().Unix())
 			handleHistorySync(client, messageStore, v, logger)
 
 		case *events.GroupInfo:
@@ -4414,7 +4427,7 @@ func main() {
 			bridgePort = 8080
 		}
 	}
-	startRESTServer(client, messageStore, bridgePort)
+	startRESTServer(client, messageStore, supervisor, bridgePort)
 
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
@@ -4460,6 +4473,8 @@ func main() {
 					}
 				}
 			} else if evt.Event == "success" {
+				pairedAtUnix.Store(time.Now().Unix())
+				clearLoggedOut()
 				if err := updatePairingQR(nil); err != nil {
 					logger.Warnf("Failed to remove pairing QR: %v", err)
 				}
@@ -4844,6 +4859,10 @@ func startTranscriptionSweep(interval time.Duration) {
 					}
 				}
 			}
+			set := appSettings.get()
+			if set.TranscribeOff {
+				continue // switched off in the panel
+			}
 			cmd := exec.Command(python, script)
 			cmd.Dir = pyDir
 			// Surface the transcriber's output (its DONE summary, per-audio
@@ -4879,6 +4898,7 @@ func startTranscriptionSweep(interval time.Duration) {
 					cmd.Env = append(cmd.Env, fmt.Sprintf("WHATSAPP_API_AUTH_TOKEN=%s", t))
 				}
 			}
+			cmd.Env = append(cmd.Env, set.transcriptionEnv()...) // the panel's choices win over the environment
 			if err := cmd.Start(); err != nil {
 				fmt.Printf("transcription sweep: failed to start: %v\n", err)
 				continue

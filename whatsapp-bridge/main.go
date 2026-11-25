@@ -120,11 +120,7 @@ func NewMessageStore() (*MessageStore, error) {
 			updated_at TIMESTAMP
 		);
 		CREATE INDEX IF NOT EXISTS idx_senders_names ON senders(full_name, push_name);
-		CREATE INDEX IF NOT EXISTS idx_messages_chat_timestamp ON messages(chat_jid, timestamp);
-		CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_jid, julianday(timestamp));
-		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
-		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
-		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_jid, timestamp);
 
 		-- Partial on purpose: this is exactly the question the transcription sweep
 		-- asks every run, and indexing only the pending rows keeps it tiny
@@ -132,6 +128,12 @@ func NewMessageStore() (*MessageStore, error) {
 		-- answer for a few thousand.
 		CREATE INDEX IF NOT EXISTS idx_messages_audio_pending ON messages(chat_jid)
 			WHERE media_type = 'audio' AND (content IS NULL OR content = '');
+		-- Reads compare and order time through julianday(): timestamps are stored with
+		-- different offsets (+03:00 and Z), so text order is not time order.
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_jtime ON messages(chat_jid, julianday(timestamp));
+		CREATE INDEX IF NOT EXISTS idx_messages_time ON messages(julianday(timestamp));
+		CREATE INDEX IF NOT EXISTS idx_messages_sender_time ON messages(sender, julianday(timestamp));
+		CREATE INDEX IF NOT EXISTS idx_chats_time ON chats(julianday(last_message_time) DESC, jid);
 	` + pollSchema + matterSchema + favoritesSchema + summarySchema + draftsSchema + mentionsSchema + lidMediaSchema + reactionsSchema + messageEditsSchema)
 	if err != nil {
 		db.Close()
@@ -334,12 +336,16 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	// zero-length BLOB, so the NULLIF guard would silently no-op and always
 	// take the incoming (possibly empty) value. Verified empirically before
 	// writing this. Use length(...) instead, which works for BLOB.
+	//
+	// The WHERE keeps the update to the row's own author (same rule as ApplyEdit): message IDs
+	// are chosen by whoever sends, so a message reusing a stored ID must not replace what someone
+	// else wrote. An unknown author on either side still refreshes the row.
 	tx, err := store.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(
+	res, err := tx.Exec(
 		`INSERT INTO messages
 		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, is_read)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (? OR EXISTS (SELECT 1 FROM read_receipts WHERE chat_jid = ? AND message_id = ?)
@@ -357,11 +363,17 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 			media_key       = CASE WHEN length(excluded.media_key)       > 0 THEN excluded.media_key       ELSE messages.media_key       END,
 			file_sha256     = CASE WHEN length(excluded.file_sha256)     > 0 THEN excluded.file_sha256     ELSE messages.file_sha256     END,
 			file_enc_sha256 = CASE WHEN length(excluded.file_enc_sha256) > 0 THEN excluded.file_enc_sha256 ELSE messages.file_enc_sha256 END,
-			file_length     = excluded.file_length`,
+			file_length     = excluded.file_length
+		WHERE messages.is_from_me = excluded.is_from_me
+			AND (excluded.is_from_me = 1 OR messages.sender = '' OR excluded.sender = '' OR messages.sender IN (excluded.sender, ?21))`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, isRead, chatJID, id, chatJID, timestamp, updateRead, revokedContent,
+		strings.TrimSuffix(sender, "@"+types.HiddenUserServer), // rows stored before senderKey hold a LID author as the bare user
 	)
 	if err != nil {
 		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		fmt.Printf("StoreMessage: kept the stored message %q in %q, the incoming one has another author\n", id, chatJID)
 	}
 	if err = applyRecordedEdit(tx, id, chatJID); err != nil {
 		return err
@@ -2110,6 +2122,17 @@ func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, str
 // components are partly attacker-influenced (filename comes from the message,
 // the retry message ID comes from the phone's response), so they are reduced to
 // their base name and checked for separators / dot segments.
+// chatMediaDir is the folder that holds a chat's downloaded media: store/<chat id>, the id being a
+// single path component. Stored chat ids come from WhatsApp and never hold a separator or a
+// dot-dot; one that does is refused, not cleaned up.
+func chatMediaDir(chatJID string) (string, error) {
+	name := strings.ReplaceAll(chatJID, ":", "_")
+	if name == "" || name == "." || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("unsafe chat id for a media folder: %q", chatJID)
+	}
+	return storePath(name), nil
+}
+
 func safeMediaPath(chatDir, messageID, filename string) (string, error) {
 	// Reject the raw components rather than silently reducing them with
 	// filepath.Base — a value containing a separator or dot segment is treated
@@ -2118,6 +2141,9 @@ func safeMediaPath(chatDir, messageID, filename string) (string, error) {
 		if c == "" || c == "." || c == ".." || strings.ContainsAny(c, `/\`) {
 			return "", fmt.Errorf("unsafe media path component: %q", c)
 		}
+	}
+	if strings.Contains(messageID, "..") { // real IDs are hex/base64; a file name may hold ".." legitimately
+		return "", fmt.Errorf("unsafe media path component: %q", messageID)
 	}
 	joined := filepath.Join(chatDir, messageID+"_"+filename)
 	// Defense in depth: ensure the cleaned result is still under chatDir.
@@ -2189,7 +2215,10 @@ func downloadMedia(client mediaDownloadClient, messageStore *MessageStore, messa
 	var err error
 
 	// First, check if we already have this file
-	chatDir := storePath(strings.ReplaceAll(chatJID, ":", "_"))
+	chatDir, err := chatMediaDir(chatJID)
+	if err != nil {
+		return false, "", "", "", err
+	}
 	localPath := ""
 
 	// Get media info from the database
@@ -2242,7 +2271,7 @@ func downloadMedia(client mediaDownloadClient, messageStore *MessageStore, messa
 		return false, "", "", "", fmt.Errorf("incomplete media information for download")
 	}
 
-	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, chatJID)
+	fmt.Printf("Attempting to download media for message %q in chat %q...\n", messageID, chatJID)
 
 	// Extract direct path from URL
 	directPath := extractDirectPathFromURL(url)
@@ -2418,7 +2447,7 @@ func resolvePhoneToJIDs(phone string) []string {
 
 	db, err := openStoreDBReadOnly()
 	if err != nil {
-		fmt.Printf("resolvePhoneToJIDs: whatsapp.db unavailable (%v), falling back to base JID only for %s\n", err, phone)
+		fmt.Printf("resolvePhoneToJIDs: whatsapp.db unavailable (%v), falling back to base JID only for %q\n", err, phone)
 		return jids
 	}
 	defer db.Close()
@@ -2427,14 +2456,14 @@ func resolvePhoneToJIDs(phone string) []string {
 	row := db.QueryRow("SELECT lid, pn FROM whatsmeow_lid_map WHERE pn = ?", phone)
 	err = row.Scan(&lid, &pn)
 	if err != nil && err != sql.ErrNoRows && len(phone) > 10 {
-		fmt.Printf("resolvePhoneToJIDs: exact lid_map lookup failed for %s: %v\n", phone, err)
+		fmt.Printf("resolvePhoneToJIDs: exact lid_map lookup failed for %q: %v\n", phone, err)
 	}
 	if err != nil && len(phone) > 10 {
 		suffix := phone[len(phone)-10:]
 		row = db.QueryRow("SELECT lid, pn FROM whatsmeow_lid_map WHERE pn LIKE ?", "%"+suffix)
 		err = row.Scan(&lid, &pn)
 		if err != nil && err != sql.ErrNoRows {
-			fmt.Printf("resolvePhoneToJIDs: suffix lid_map lookup failed for %s: %v\n", phone, err)
+			fmt.Printf("resolvePhoneToJIDs: suffix lid_map lookup failed for %q: %v\n", phone, err)
 		}
 	}
 	if err == nil {
@@ -2454,7 +2483,7 @@ func getContactNameFromStore(phone string) string {
 	phone = normalizePhone(phone)
 	db, err := openStoreDBReadOnly()
 	if err != nil {
-		fmt.Printf("getContactNameFromStore: whatsapp.db unavailable (%v) for %s\n", err, phone)
+		fmt.Printf("getContactNameFromStore: whatsapp.db unavailable (%v) for %q\n", err, phone)
 		return ""
 	}
 	defer db.Close()
@@ -2466,7 +2495,7 @@ func getContactNameFromStore(phone string) string {
 	).Scan(&fullName, &pushName)
 	if err != nil {
 		if err != sql.ErrNoRows {
-			fmt.Printf("getContactNameFromStore: query failed for %s: %v\n", phone, err)
+			fmt.Printf("getContactNameFromStore: query failed for %q: %v\n", phone, err)
 		}
 		return ""
 	}
@@ -2726,6 +2755,7 @@ func listActiveChats(db *sql.DB, req ActiveChatsRequest, selfUsers []string, toP
 		params = append(params, t.UTC().Format("2006-01-02 15:04:05.000"))
 	}
 
+	// #nosec G202 -- the WHERE fragments are constants; values are bound
 	rows, err := db.Query(`
 		SELECT messages.chat_jid, messages.timestamp, substr(messages.content, 1, ?), messages.media_type,
 		       chats.name, senders.full_name, senders.push_name
@@ -2969,6 +2999,7 @@ func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (Messa
 				if side.op == ">" {
 					appendMessage(target)
 				}
+				// #nosec G202 -- side.op and side.order come from the literal list above; values are bound
 				contextRows, err := db.Query(`
 					SELECT messages.timestamp, messages.sender, chats.name, messages.content,
 						messages.is_from_me, chats.jid, messages.id, messages.media_type
@@ -3383,6 +3414,7 @@ func getDirectChatByContact(db *sql.DB, req ChatByContactRequest) (ChatResponse,
 		params[i] = jid
 	}
 
+	// #nosec G201 -- only "?" placeholders are formatted in; values are bound
 	query := fmt.Sprintf(`
 		SELECT c.jid, c.name, c.last_message_time,
 		       m.content, m.sender, m.is_from_me,
@@ -3773,7 +3805,7 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
 			return
 		}
-		fmt.Printf("Received request to leave group %s\n", req.JID)
+		fmt.Printf("Received request to leave group %q\n", req.JID)
 		resp, err := leaveWhatsAppGroup(r.Context(), client, messageStore, req.JID)
 		if err != nil {
 			writeActionError(w, err)
@@ -4264,6 +4296,14 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 	}()
 }
 
+// newRESTServer is the HTTP server of the API and the panel. A client must send its request
+// within the read timeouts, so half-open connections do not pile up. No write timeout: sending a
+// large file or downloading media legitimately takes minutes.
+func newRESTServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{Addr: addr, Handler: h,
+		ReadHeaderTimeout: 10 * time.Second, ReadTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
+}
+
 func main() {
 	// Set up logger
 	logger := waLog.Stdout("Client", "INFO", true)
@@ -4468,6 +4508,7 @@ func main() {
 						pairingQRPath := storePath("whatsapp-qr.png")
 						fmt.Printf("QR saved as image: %s\n", pairingQRPath)
 						if runtime.GOOS == "darwin" {
+							// #nosec G204 -- opens the QR image the bridge itself just wrote
 							_ = exec.Command("open", pairingQRPath).Start()
 						}
 					}
@@ -4708,6 +4749,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				}
 				senderJID := resolveToPN(client, historySender(jid, own, msg.Message))
 				sender := senderKey(client, senderJID)
+				// #nosec G115 -- a message timestamp in seconds fits int64
 				timestamp := time.Unix(int64(msg.Message.GetMessageTimestamp()), 0)
 				if inner.GetProtocolMessage() != nil {
 					if id, content, ok := protocolAction(inner); ok {
@@ -4863,6 +4905,7 @@ func startTranscriptionSweep(interval time.Duration) {
 			if set.TranscribeOff {
 				continue // switched off in the panel
 			}
+			// #nosec G204 -- fixed interpreter and script paths under the install folder
 			cmd := exec.Command(python, script)
 			cmd.Dir = pyDir
 			// Surface the transcriber's output (its DONE summary, per-audio
@@ -5126,7 +5169,11 @@ func handleMediaRetry(client mediaDownloadClient, messageStore *MessageStore, ev
 	unlock := lockMediaMessage(entry.chatJID, evt.MessageID)
 	defer unlock()
 
-	chatDir := storePath(strings.ReplaceAll(entry.chatJID, ":", "_"))
+	chatDir, err := chatMediaDir(entry.chatJID)
+	if err != nil {
+		fmt.Printf("MEDIA RETRY %s: ERROR %v\n", evt.MessageID, err)
+		return
+	}
 	if err := privateDirectory(chatDir); err != nil {
 		fmt.Printf("MEDIA RETRY %s: ERROR mkdir failed: %v\n", evt.MessageID, err)
 		return
@@ -5291,6 +5338,7 @@ func placeholderWaveform(duration uint32) []byte {
 		val += (baseAmplitude / 2) * math.Sin(pos*math.Pi*frequencyFactor*16)
 
 		// Add some randomness to make it look more natural
+		// #nosec G404 -- cosmetic jitter for the voice-note waveform
 		val += (rand.Float64() - 0.5) * 15
 
 		// Add some fade-in and fade-out effects

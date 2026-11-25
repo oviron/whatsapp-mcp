@@ -13,7 +13,7 @@ const maxMediaBytes = 100 * 1024 * 1024
 var errMediaPath = errors.New("Media file unavailable or outside allowed directories (WHATSAPP_MEDIA_DIRS)")
 
 func mediaRelative(root, path string) (string, bool) {
-	rootInfo, err := os.Stat(root)
+	rootInfo, err := os.Stat(root) // #nosec G703 -- root is an allowed folder from the owner's configuration or the default list
 	if err != nil {
 		return "", false
 	}

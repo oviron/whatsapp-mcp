@@ -51,6 +51,7 @@ func validMediaFile(path string, length uint64, hash []byte) bool {
 	}
 	defer file.Close()
 	info, err := file.Stat()
+	// #nosec G115 -- a regular file's size is never negative
 	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 || (length != 0 && uint64(info.Size()) != length) {
 		return false
 	}

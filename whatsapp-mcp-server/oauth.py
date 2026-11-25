@@ -12,6 +12,7 @@ changes. The static MCP_AUTH_TOKEN keeps working as a bearer token (Claude Code,
 import hashlib
 import hmac
 import html
+import ipaddress
 import json
 import os
 import secrets
@@ -34,7 +35,8 @@ ACCESS_TTL = 3600
 REFRESH_TTL = 30 * 86400
 CODE_TTL = 300
 PENDING_TTL = 600
-MAX_FAILS, LOCK_WINDOW = 10, 900  # failed passphrases tolerated per window, across everyone
+MAX_FAILS, LOCK_WINDOW = 10, 900  # failed passphrases tolerated per window, per client address
+MAX_CLIENTS = 1024  # addresses with failures remembered at once; past that, new ones share one count
 # Claude (claude.ai connectors) and ChatGPT (developer-mode connectors) callbacks; others are refused.
 CLIENT_HOSTS = {"claude.ai", "www.claude.ai", "claude.com", "www.claude.com", "chatgpt.com", "chat.openai.com"}
 LOOPBACK = {"localhost", "127.0.0.1", "[::1]", "::1"}
@@ -46,6 +48,21 @@ def redirect_allowed(uri: str) -> bool:
     return (u.scheme == "https" and u.hostname in CLIENT_HOSTS) or (u.scheme == "http" and u.hostname in LOOPBACK)
 
 
+def client_key(host: str) -> str:
+    """Who is typing passphrases: the peer address, or its /64 for IPv6 (one network holds all of those).
+
+    Behind a reverse proxy this is the visitor only when the proxy forwards the address and the server trusts it
+    (uvicorn: X-Forwarded-For from FORWARDED_ALLOW_IPS, default 127.0.0.1); otherwise every visitor shares one count.
+    """
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return str(ipaddress.ip_network((ip, 64), strict=False)) if ip.version == 6 else str(ip)
+
+
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -54,6 +71,8 @@ class OwnerOAuth:
     def __init__(self, db_path: str, passphrase: str, static_token: str, public_url: str, now: Callable[[], float] = time.time):
         self.passphrase, self.static_token, self.public_url, self.now = passphrase, static_token, public_url, now
         self._db = sqlite3.connect(db_path, check_same_thread=False)
+        if os.path.isfile(db_path):  # client registrations and token hashes: this user only, older files included
+            os.chmod(db_path, 0o600)
         # The bridge panel reads and deletes from these tables (whatsapp-bridge/settings.go): keep them in step.
         self._db.executescript(
             "CREATE TABLE IF NOT EXISTS clients (client_id TEXT PRIMARY KEY, body TEXT NOT NULL);"
@@ -62,7 +81,7 @@ class OwnerOAuth:
         self._lock = threading.Lock()
         self._pending: dict[str, tuple[float, str, AuthorizationParams]] = {}  # login id -> (expires, client_id, params)
         self._codes: dict[str, AuthorizationCode] = {}
-        self._fails: list[float] = []
+        self._fails: dict[str, list[float]] = {}  # client_key -> times of its wrong passphrases
 
     # ---- clients ---------------------------------------------------------------
     async def get_client(self, client_id: str) -> Optional[OAuthClientInformationFull]:
@@ -85,16 +104,23 @@ class OwnerOAuth:
             self._pending[req] = (self.now() + PENDING_TTL, client.client_id, params)
         return f"{self.public_url}/oauth/login?req={req}"
 
-    def locked(self) -> bool:
-        with self._lock:
-            self._fails = [t for t in self._fails if t > self.now() - LOCK_WINDOW]
-            return len(self._fails) >= MAX_FAILS
+    def _counted(self, who: str) -> str:
+        """Drop expired failures and return the key who is counted under. Call with the lock held."""
+        cutoff = self.now() - LOCK_WINDOW
+        self._fails = {k: kept for k, v in self._fails.items() if (kept := [t for t in v if t > cutoff])}
+        return who if who in self._fails or len(self._fails) < MAX_CLIENTS else ""
 
-    def check_passphrase(self, given: str) -> bool:
+    def locked(self, who: str = "") -> bool:
+        with self._lock:
+            key = self._counted(who)  # replaces self._fails: resolve it before touching the dict
+            return len(self._fails.get(key, ())) >= MAX_FAILS
+
+    def check_passphrase(self, given: str, who: str = "") -> bool:
         ok = hmac.compare_digest(given.encode(), self.passphrase.encode())
         if not ok:
             with self._lock:
-                self._fails.append(self.now())
+                key = self._counted(who)
+                self._fails.setdefault(key, []).append(self.now())
         return ok
 
     def pending(self, req: str):
@@ -134,7 +160,7 @@ class OwnerOAuth:
             for tok, kind, ttl in ((access, "access", ACCESS_TTL), (refresh, "refresh", REFRESH_TTL)):
                 self._db.execute("INSERT INTO tokens (hash, kind, client_id, scopes, expires_at) VALUES (?, ?, ?, ?, ?)",
                                  (_hash(tok), kind, client_id, json.dumps(scopes), now + ttl))
-        return OAuthToken(access_token=access, token_type="bearer", expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh)
+        return OAuthToken(access_token=access, token_type="bearer", expires_in=ACCESS_TTL, scope=" ".join(scopes), refresh_token=refresh)  # nosec B106 -- the OAuth token type, not a secret
 
     def _load(self, token: str, kind: str):
         with self._lock:
@@ -196,10 +222,11 @@ def install_oauth_routes(mcp, provider: OwnerOAuth) -> None:
             body.extend(chunk)
         form = parse_qs(body.decode("utf-8", "replace"))
         req, given = (form.get("req") or [""])[0], (form.get("passphrase") or [""])[0]
-        if provider.locked():
+        who = client_key(request.client.host if request.client else "")
+        if provider.locked(who):
             return HTMLResponse("Too many wrong passphrases. Try again in 15 minutes.", status_code=429, headers=_HEADERS)
         # Every wrong passphrase counts, whatever the req: a valid req costs an attacker one /authorize call.
-        if not provider.check_passphrase(given):
+        if not provider.check_passphrase(given, who):
             return await page(req, 401, "Wrong passphrase.") if provider.pending(req) else HTMLResponse(
                 "This login link has expired. Start again from Claude.", status_code=400, headers=_HEADERS)
         target = provider.approve(req)

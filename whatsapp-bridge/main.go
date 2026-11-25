@@ -2999,6 +2999,7 @@ func listMessagesWithSearch(db *sql.DB, req MessagesRequest, useFTS bool) (Messa
 				if side.op == ">" {
 					appendMessage(target)
 				}
+				// #nosec G202 -- side.op and side.order come from the literal list above; values are bound
 				contextRows, err := db.Query(`
 					SELECT messages.timestamp, messages.sender, chats.name, messages.content,
 						messages.is_from_me, chats.jid, messages.id, messages.media_type
@@ -4507,6 +4508,7 @@ func main() {
 						pairingQRPath := storePath("whatsapp-qr.png")
 						fmt.Printf("QR saved as image: %s\n", pairingQRPath)
 						if runtime.GOOS == "darwin" {
+							// #nosec G204 -- opens the QR image the bridge itself just wrote
 							_ = exec.Command("open", pairingQRPath).Start()
 						}
 					}

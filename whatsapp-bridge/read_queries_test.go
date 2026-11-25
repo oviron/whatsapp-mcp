@@ -188,7 +188,7 @@ func TestReadSenderPNAndLID(t *testing.T) {
 func TestReadQueryIndexes(t *testing.T) {
 	s := setupChatStore(t)
 	seedChatWithLastMessage(t, s.db, "111@s.whatsapp.net", "Test", "preserved", "111", false, ts("2026-10-01T08:00:00Z"))
-	for _, name := range []string{"idx_messages_chat_timestamp", "idx_messages_chat_time", "idx_messages_time", "idx_messages_sender_time", "idx_chats_time"} {
+	for _, name := range []string{"idx_messages_chat_time", "idx_messages_chat_jtime", "idx_messages_time", "idx_messages_sender_time", "idx_chats_time"} {
 		if _, err := s.db.Exec("DROP INDEX IF EXISTS " + name); err != nil {
 			t.Fatal(err)
 		}
@@ -211,11 +211,11 @@ func TestReadQueryIndexes(t *testing.T) {
 		t.Fatalf("reopened chat = %+v, %v", got, err)
 	}
 	for _, tc := range []struct{ name, query, index string }{
-		{"raw chat time", `SELECT id FROM messages WHERE chat_jid = '111' ORDER BY timestamp DESC`, "idx_messages_chat_timestamp"},
-		{"chat time", `SELECT m.timestamp, m.sender, c.name, m.content, m.is_from_me, c.jid, m.id, m.media_type FROM messages m JOIN chats c ON c.jid = m.chat_jid WHERE m.chat_jid = '111' AND julianday(m.timestamp) > julianday('2026-10-01') ORDER BY julianday(m.timestamp) DESC, m.rowid DESC LIMIT 20`, "idx_messages_chat_time"},
+		{"raw chat time", `SELECT id FROM messages WHERE chat_jid = '111' ORDER BY timestamp DESC`, "idx_messages_chat_time"},
+		{"chat time", `SELECT m.timestamp, m.sender, c.name, m.content, m.is_from_me, c.jid, m.id, m.media_type FROM messages m JOIN chats c ON c.jid = m.chat_jid WHERE m.chat_jid = '111' AND julianday(m.timestamp) > julianday('2026-10-01') ORDER BY julianday(m.timestamp) DESC, m.rowid DESC LIMIT 20`, "idx_messages_chat_jtime"},
 		{"time", `SELECT m.id FROM messages m JOIN chats c ON c.jid = m.chat_jid WHERE julianday(m.timestamp) > julianday('2026-10-01') ORDER BY julianday(m.timestamp) DESC, m.rowid DESC LIMIT 20`, "idx_messages_time"},
 		{"sender", `SELECT id FROM messages WHERE sender = '111' ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 20`, "idx_messages_sender_time"},
-		{"chats", `SELECT c.jid, c.name, c.last_message_time, m.content, m.sender, m.is_from_me FROM chats c LEFT JOIN messages m ON m.rowid = (SELECT rowid FROM messages WHERE chat_jid = c.jid ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 1) ORDER BY julianday(c.last_message_time) DESC, c.jid LIMIT 20`, "idx_messages_chat_time"},
+		{"chats", `SELECT c.jid, c.name, c.last_message_time, m.content, m.sender, m.is_from_me FROM chats c LEFT JOIN messages m ON m.rowid = (SELECT rowid FROM messages WHERE chat_jid = c.jid ORDER BY julianday(timestamp) DESC, rowid DESC LIMIT 1) ORDER BY julianday(c.last_message_time) DESC, c.jid LIMIT 20`, "idx_messages_chat_jtime"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows, err := s.db.Query("EXPLAIN QUERY PLAN " + tc.query)

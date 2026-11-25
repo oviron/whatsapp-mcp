@@ -32,6 +32,9 @@ Bridge Go (`whatsapp-bridge/main.go` e arquivos de cada feature) — conecta ao 
 ## Captura de conteúdo
 
 - `extractTextContent` retorna captions de image/video/document (`GetCaption()`). Bug original: caption era dropado na escrita → busca não achava texto que existia. Caminho live e caminho de history-sync compartilham a função (antes o sync tinha extractor inline duplicado com o mesmo bug).
+- `StoreMessage` updates an existing row only for the same author (same `is_from_me`; for others' messages the same `sender`, the bare LID user counts as its LID JID, an empty sender on either side passes). Message IDs are chosen by the sender, so a reused ID from someone else is ignored and logged. Same rule as `ApplyEdit`.
+- `storeMentions` writes one transaction, deduped, at most `maxStoredMentions` per message.
+- The review cursor never passes now: `reviewMark` clamps `up_to`, and `reviewCursor` rewrites a stored future value to now on the first read.
 - Mensagens enviadas são persistidas localmente na hora (echo multi-device não dispara em conta single-device).
 
 ## History sync
@@ -47,6 +50,7 @@ Bridge Go (`whatsapp-bridge/main.go` e arquivos de cada feature) — conecta ao 
 ## Mídia + segurança
 
 - **`safeMediaPath`** (`main.go`): rejeita componentes crus com `/`, `\`, `..`, `.`, vazio (não sanitiza — surface o ataque).
+- **`chatMediaDir`** is the only way to name a chat's media folder (`store/<chat id>`, one path component; a separator or `..` is refused). Request values printed to the log use `%q`, so a line break in them cannot start a fake log line (`recover_audios.py` parses the log).
 - Path de mídia prefixado com message ID: filename derivado do sync-time colidia (571 áudios → 87 paths únicos), cache devolvia bytes errados.
 - **Media retry** (recuperação de mídia expirada): `SendMediaRetryReceipt` → `events.MediaRetry` → `DecryptMediaRetryNotification` → `DownloadToFile`. Downloads usam arquivo temporário, validação e rename (`media_cache.go`). History sync NÃO recupera (re-entrega as mesmas URLs mortas do CDN). Endpoint `/api/mediaretry`. Log contract estável: `MEDIA RETRY <id>: SUCCESS|NOTONPHONE|ERROR`.
 
@@ -78,7 +82,7 @@ If the log shows `failed to verify patch vNN: mismatching LTHash` and every arch
 
 `/status` is the onboarding panel (Portuguese UI, stdlib `html/template`, no JS framework). The open page is read-only; the connector link (`MCP_PUBLIC_URL` + `/mcp`), **Reconectar**, the connector check and "último acesso à API" render only for a signed-in request.
 
-- Panel key = `API_AUTH_TOKEN`. `POST /status/login` sets cookie `panel` = HMAC(token, "panel"), HttpOnly, SameSite=Strict, Path=/status. No token configured: unlocked only for a loopback `Host` (DNS rebinding cannot fake it). 10 wrong keys per 15 min lock sign-in.
+- Panel key = `API_AUTH_TOKEN`. `POST /status/login` sets cookie `panel` = HMAC(token, "panel"), HttpOnly, SameSite=Strict, Path=/status. No token configured: unlocked only for a loopback `Host` (DNS rebinding cannot fake it). 10 wrong keys per 15 min lock sign-in for the client address that typed them (`clientKey`: peer address, /64 for IPv6, and the last `X-Forwarded-For` entry only when the peer is loopback, never from another peer; at most `loginMaxClients` tracked, then a shared count). Panel form bodies are capped at `panelMaxBody` in `login` and `allowed`. The HTTP server is `newRESTServer` (read timeouts, no write timeout on purpose).
 - Every action (`/status/reconnect`, `/status/diagnose`, `/status/logout`) goes through `panel.action`: POST, `Origin`/`Referer` host equal to `Host`, signed in. Add new actions through it, never as a bare handler.
 - `panelState` picks the one banner (ok, stall, pairing, qr, loggedout, held, stopped, offline, waiting). Stall = connected and newest stored message older than the setting (default 6 h, 0 = never). `store/logged_out` is a marker written on `events.LoggedOut` (it survives the restart) and removed when a QR is scanned.
 - `connectionSupervisor.forceReconnect` = Disconnect + Connect of the same session; refused when held/stopped/unpaired and within 2 minutes of the previous one. The watchdog `reconnect()` is a no-op while the socket looks connected, which is the silent-stall case.

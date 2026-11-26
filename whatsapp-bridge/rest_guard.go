@@ -9,7 +9,8 @@ import (
 	"strings"
 )
 
-// maxAPIBody caps /api/* request bodies: they carry JSON with paths and text, never file bytes.
+// maxAPIBody caps /api/* request bodies: they carry JSON with paths and text. The one exception,
+// /api/send/file, carries the file itself and is capped at maxMediaBytes.
 const maxAPIBody = 1 << 20
 
 // readOnlyAPI lists the /api/* routes that only read, for API_READONLY=true. Anything not listed is refused,
@@ -23,6 +24,7 @@ var readOnlyAPI = map[string]bool{
 	"/api/contacts/last_interaction": true,
 	"/api/contacts/search":           true,
 	"/api/download":                  true, // fetches our own media into store/; nothing leaves the bridge
+	"/api/download/file":             true, // the same media, returned to the API client
 	"/api/drafts/list":               true,
 	"/api/favorites/list":            true,
 	"/api/favorites/suggest":         true,
@@ -71,7 +73,15 @@ func apiGuard(token, bindAddr string, port int, readOnly bool, next http.Handler
 			http.Error(w, "Forbidden: the bridge runs with API_READONLY=true", http.StatusForbidden)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, maxAPIBody)
+		limit := int64(maxAPIBody)
+		if r.URL.Path == "/api/send/file" {
+			limit = maxMediaBytes // the handler caps it again
+		}
+		if r.ContentLength > limit {
+			http.Error(w, "Request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)
 	})
 }

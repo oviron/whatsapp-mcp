@@ -69,8 +69,8 @@ class BridgeErrors(unittest.IsolatedAsyncioTestCase):
 
     def test_download_auth_log_does_not_include_response_body(self):
         with patch("whatsapp.requests.post", return_value=response(401)), self.assertLogs("whatsapp", level="WARNING") as logs:
-            with self.assertRaises(whatsapp.BridgeError):
-                whatsapp.download_media("test", "chat")
+            path, _ = whatsapp.download_media("test", "chat")
+        self.assertIsNone(path)
         self.assertIn("HTTP 401", " ".join(logs.output))
         self.assertNotIn(SECRET, " ".join(logs.output))
 
@@ -81,6 +81,12 @@ class AllToolBridgeErrors(unittest.IsolatedAsyncioTestCase):
     async def test_every_tool_sanitizes_bridge_failures(self):
         mod = load_main()
         voice_path = os.path.join(self.enterContext(tempfile.TemporaryDirectory()), "voice.ogg")
+
+        def synthesize(_text):
+            # send_voice_message deletes the file after each send
+            with open(voice_path, "wb") as f:
+                f.write(b"voice")
+            return voice_path
         values = {
             "query": "test", "chat_jid": "chat", "jid": "group@g.us", "group_jid": "group@g.us",
             "message_id": "M1", "recipient": "test", "message": "hello", "text": "hello",
@@ -115,6 +121,9 @@ class AllToolBridgeErrors(unittest.IsolatedAsyncioTestCase):
             cases.append(({"return_value": Mock(status_code=status, text=secret, headers={},
                 json=Mock(side_effect=ValueError(secret)))}, expected))
         for tool in await mod.mcp.list_tools():
+            if tool.name == "download_media":
+                # download_media keeps its own status-based messages (test_download_media_errors.py).
+                continue
             arguments = {name: values[name] for name in tool.inputSchema.get("required", [])}
             if tool.name == "update_group_settings":
                 arguments["name"] = "test"
@@ -125,9 +134,9 @@ class AllToolBridgeErrors(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(tool=tool.name, expected=expected), \
                      patch("whatsapp.requests.post", **mock_args) as post, \
                      patch("whatsapp.requests.request", **mock_args) as request, \
-                     patch("whatsapp.open_media", side_effect=lambda _: nullcontext()), \
+                     patch("whatsapp.media_files.read_outbound", return_value=b"audio"), \
                      patch("whatsapp.tts.engine_ready", return_value=(True, "test")), \
-                     patch("whatsapp.tts.synthesize", return_value=voice_path), \
+                     patch("whatsapp.tts.synthesize", side_effect=synthesize), \
                      patch.dict(whatsapp._sender_name_cache, clear=True), \
                      self.assertLogs("whatsapp", level="WARNING") as logs:
                     result = await self.call(mod, tool.name, arguments)
@@ -180,12 +189,13 @@ class BridgeResponseContract(unittest.TestCase):
             (lambda: whatsapp.send_contact("test", "name", "test"), (True, "Contact sent (message_id: M1)")),
             (lambda: whatsapp.create_group("group", ["test"]), (True, body["message"],
              {"jid": "group@g.us", "name": "group", "participant_count": 2})),
-            (lambda: whatsapp.download_media("M1", "chat"), "download.ogg"),
+            (lambda: whatsapp.download_media("M1", "chat"), ("download.ogg", "Media downloaded successfully")),
             (lambda: whatsapp.matter_call("/matters/list", {}), body),
         )
         for call, expected in cases:
             with self.subTest(expected=expected), patch("whatsapp.requests.post", return_value=response(body=body)), \
-                 patch("whatsapp.open_media", side_effect=lambda _: nullcontext()):
+                 patch("whatsapp.media_files.read_outbound", return_value=b"audio"), \
+                 patch("whatsapp.media_files.save_download", return_value="download.ogg"):
                 self.assertEqual(call(), expected)
 
 

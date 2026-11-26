@@ -33,15 +33,15 @@ class PrivateLogsTest(unittest.TestCase):
     def test_download_logs_keep_status_without_echoing_error_content(self):
         secret = "connection refused: https://media.invalid/SECRET"
         for flag in ("", "0", "false", "1", "true", "yes", "on", " TRUE "):
-            for status in (200, 500):
+            for status in (401, 500):
                 response = Mock(status_code=status, text=secret)
                 response.json.return_value = {"success": False, "message": secret}
                 with self.subTest(flag=flag, status=status), \
                      patch.dict(os.environ, {"WHATSAPP_LOG_CONTENT": flag}), \
                      patch.object(whatsapp.requests, "post", return_value=response), \
                      self.assertLogs(whatsapp.logger, level="WARNING") as logs:
-                    with self.assertRaises(whatsapp.BridgeError):
-                        whatsapp.download_media("msg", "chat")
+                    path, _ = whatsapp.download_media("msg", "chat")
+                self.assertIsNone(path)
                 self.assertNotIn(secret, " ".join(logs.output))
                 self.assertIn(f"HTTP {status}", " ".join(logs.output))
 

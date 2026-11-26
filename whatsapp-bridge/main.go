@@ -368,6 +368,7 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 			AND (excluded.is_from_me = 1 OR messages.sender = '' OR excluded.sender = '' OR messages.sender IN (excluded.sender, ?21))`,
 		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, isRead, chatJID, id, chatJID, timestamp, updateRead, revokedContent,
 		strings.TrimSuffix(sender, "@"+types.HiddenUserServer), // rows stored before senderKey hold a LID author as the bare user
+		revokedContent,
 	)
 	if err != nil {
 		return err
@@ -490,6 +491,22 @@ type SendMessageRequest struct {
 
 // Function to send a WhatsApp message
 func sendWhatsAppMessage(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string, replyTo string, mentions []string) (string, error) {
+	var media *outboundFile
+	if mediaPath != "" {
+		if !client.IsConnected() {
+			return "", errors.New("Not connected to WhatsApp")
+		}
+		data, err := readMediaFile(mediaPath)
+		if err != nil {
+			return "", err
+		}
+		media = &outboundFile{name: filepath.Base(mediaPath), data: data}
+	}
+	return sendWhatsAppContent(ctx, client, messageStore, recipient, message, media, replyTo, mentions)
+}
+
+// sendWhatsAppContent sends text, or media (with message as its caption) when media is set.
+func sendWhatsAppContent(ctx context.Context, client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, media *outboundFile, replyTo string, mentions []string) (string, error) {
 	if !client.IsConnected() {
 		return "", errors.New("Not connected to WhatsApp")
 	}
@@ -518,15 +535,11 @@ func sendWhatsAppMessage(ctx context.Context, client *whatsmeow.Client, messageS
 	msg := &waProto.Message{}
 
 	// Check if we have media to send
-	if mediaPath != "" {
-		// Read media file
-		mediaData, err := readMediaFile(mediaPath)
-		if err != nil {
-			return "", err
-		}
+	if media != nil {
+		mediaData := media.data
 
 		// Determine media type and mime type based on file extension
-		fileExt := strings.ToLower(mediaPath[strings.LastIndex(mediaPath, ".")+1:])
+		fileExt := strings.ToLower(strings.TrimPrefix(filepath.Ext(media.name), "."))
 		var mediaType whatsmeow.MediaType
 		var mimeType string
 
@@ -635,7 +648,7 @@ func sendWhatsAppMessage(ctx context.Context, client *whatsmeow.Client, messageS
 				FileLength:    &resp.FileLength,
 			}
 		case whatsmeow.MediaDocument:
-			docFilename := filepath.Base(mediaPath)
+			docFilename := media.name
 			msg.DocumentMessage = &waProto.DocumentMessage{
 				FileName:      proto.String(docFilename),
 				Title:         proto.String(docFilename),
@@ -683,7 +696,11 @@ func sendWhatsAppMessage(ctx context.Context, client *whatsmeow.Client, messageS
 	}
 	logMessage(resp.Timestamp, true, recipientJID.String(), senderJID, mediaType, message)
 
-	persistOutboundMessage(client, messageStore, recipientJID, msg, mediaPath, message, resp, mentions)
+	mediaName := ""
+	if media != nil {
+		mediaName = media.name
+	}
+	persistOutboundMessage(client, messageStore, recipientJID, msg, mediaName, message, resp, mentions)
 
 	return fmt.Sprintf("Message sent to %s", recipient), nil
 }
@@ -3700,6 +3717,13 @@ img{border:8px solid white;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,.2
 			Path:     path,
 		})
 	})
+
+	http.HandleFunc("/api/send/file", sendFileHandler(func(ctx context.Context, recipient, message string, f *outboundFile) (string, error) {
+		return sendWhatsAppContent(ctx, client, messageStore, recipient, message, f, "", nil)
+	}))
+	http.HandleFunc("/api/download/file", downloadFileHandler(func(messageID, chatJID string) (bool, string, string, string, error) {
+		return downloadMedia(client, messageStore, messageID, chatJID)
+	}))
 
 	// Handler for requesting media retry (re-upload of expired media from the phone)
 	http.HandleFunc("/api/mediaretry", func(w http.ResponseWriter, r *http.Request) {

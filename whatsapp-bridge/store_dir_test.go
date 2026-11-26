@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -168,5 +169,28 @@ func TestStoreDirMediaRoots(t *testing.T) {
 		t.Setenv("WHATSAPP_MEDIA_DIRS", roots)
 		expectMediaDenied(t, mediaFile(t, filepath.Join(root, "whatsapp.db")))
 		expectMediaDenied(t, mediaFile(t, filepath.Join(root, "messages.db-wal")))
+	}
+}
+
+// /api/download/file serves media from the configured store.
+func TestStoreDirDownloadFile(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	t.Setenv("WHATSAPP_STORE_DIR", root)
+	s := setupChatStore(t)
+	const chat, id = "5511@s.whatsapp.net", "ABC123"
+	seedMedia(t, s, chat, id, "photo.jpg")
+	if err := os.MkdirAll(filepath.Join(root, chat), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, chat, id+"_photo.jpg"), []byte("received"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := downloadFileHandler(func(id, chat string) (bool, string, string, string, error) {
+		return downloadMedia(nil, s, id, chat)
+	})
+	w := httptest.NewRecorder()
+	h(w, downloadRequest(id, chat))
+	if w.Code != 200 || w.Body.String() != "received" {
+		t.Fatalf("status %d body %q", w.Code, w.Body)
 	}
 }

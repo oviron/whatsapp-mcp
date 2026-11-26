@@ -103,7 +103,7 @@ func TestAPIGuardReadOnlyRefusesWrites(t *testing.T) {
 	}
 }
 
-// Handlers decode JSON straight from the body, so an oversized one must fail to decode instead of being read whole.
+// Handlers decode JSON straight from the body, so an oversized one is refused before any handler reads it.
 func TestAPIGuardCapsTheBody(t *testing.T) {
 	var decoded bool
 	mux := http.NewServeMux()
@@ -117,8 +117,8 @@ func TestAPIGuardCapsTheBody(t *testing.T) {
 	})
 	h := apiGuard("", "127.0.0.1", 8080, false, mux)
 	body := `{"recipient":"111","message":"` + strings.Repeat("x", maxAPIBody) + `"}`
-	if got := guardCode(h, "/api/send", "127.0.0.1:8080", "", "", body); got != 400 || decoded {
-		t.Errorf("oversized body: got %d (decoded=%v), want 400 without decoding", got, decoded)
+	if got := guardCode(h, "/api/send", "127.0.0.1:8080", "", "", body); got != http.StatusRequestEntityTooLarge || decoded {
+		t.Errorf("oversized body: got %d (decoded=%v), want 413 without decoding", got, decoded)
 	}
 	if got := guardCode(h, "/api/send", "127.0.0.1:8080", "", "", `{"recipient":"111","message":"hi"}`); got != 200 || !decoded {
 		t.Errorf("normal body: got %d (decoded=%v)", got, decoded)

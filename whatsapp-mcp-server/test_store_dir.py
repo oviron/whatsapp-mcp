@@ -29,8 +29,8 @@ with patch.object(clone_voice, 'rows', return_value=[]) as rows:
 
     def test_python_paths_use_default_or_absolute_store(self):
         bridge = Path(__file__).resolve().parent.parent / "whatsapp-bridge"
-        code = ("import json,media_paths,transcribe,recover_audios; "
-                "print(json.dumps([str(media_paths.STORE_DIR),transcribe.DB_PATH,recover_audios.DB_PATH]))")
+        code = ("import json,store_paths,transcribe,recover_audios; "
+                "print(json.dumps([str(store_paths.STORE_DIR),transcribe.DB_PATH,recover_audios.DB_PATH]))")
         with tempfile.TemporaryDirectory() as tmp:
             for value in (None, "", str(Path(tmp) / "external [data] #?%")):
                 with self.subTest(value=value):

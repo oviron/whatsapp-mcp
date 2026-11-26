@@ -15,11 +15,15 @@ LEAK = "mkdir /srv/secret/store: permission denied"
 
 
 class FakeResponse:
+    headers = {}
+
     def __init__(self, status_code, json_body=None, text=""):
         self.status_code = status_code
         self._json = json_body
         self.text = text
-        self.headers = {}
+
+    def close(self):
+        pass
 
     def json(self):
         if self._json is None:
@@ -36,14 +40,6 @@ def _download(outcome):
         return whatsapp.download_media("MSG", "chat@s.whatsapp.net")
 
 
-def _error(outcome):
-    try:
-        _download(outcome)
-    except whatsapp.BridgeError as error:
-        return str(error)
-    raise AssertionError("download_media did not fail")
-
-
 class DownloadMediaErrorTest(unittest.TestCase):
     def test_raw_bridge_text_never_reaches_the_client(self):
         outcomes = [
@@ -55,23 +51,30 @@ class DownloadMediaErrorTest(unittest.TestCase):
             FakeResponse(404, text=LEAK),
             FakeResponse(500, {"success": False, "message": LEAK, "reason": "media_gone"}),
             requests.ConnectionError(LEAK),
+            RuntimeError(LEAK),
         ]
         for outcome in outcomes:
             with self.subTest(outcome=repr(getattr(outcome, "status_code", outcome))):
-                message = _error(outcome)
+                path, message = _download(outcome)
+                self.assertIsNone(path)
                 self.assertTrue(message)
                 self.assertNotIn("mkdir", message)
                 self.assertNotIn("/srv/secret", message)
 
     def test_messages_are_status_based(self):
-        self.assertIn("401", _error(FakeResponse(401, text="x")))
-        self.assertIn("404", _error(FakeResponse(404, text="x")))
-        self.assertIn("unavailable", _error(requests.ConnectionError("x")))
+        self.assertIn("401", _download(FakeResponse(401, text="x"))[1])
+        self.assertIn("404", _download(FakeResponse(404, text="x"))[1])
+        self.assertEqual(_download(requests.ConnectionError("x"))[1], "Bridge unreachable")
+        self.assertEqual(_download(FakeResponse(500, {"message": "x"}))[1], "Download failed")
         self.assertIn("no longer available",
-                      _error(FakeResponse(500, {"message": "x", "reason": "media_gone"})))
+                      _download(FakeResponse(500, {"message": "x", "reason": "media_gone"}))[1])
 
-    def test_success_still_returns_the_path(self):
-        self.assertEqual(_download(FakeResponse(200, {"success": True, "path": "/tmp/x.ogg"})), "/tmp/x.ogg")
+    def test_old_bridge_still_returns_its_path(self):
+        # A bridge without /api/download/file answers 404 there; the old route gives its own path.
+        replies = iter([FakeResponse(404, text="404 page not found"), FakeResponse(200, {"success": True, "path": "/tmp/x.ogg"})])
+        with unittest.mock.patch.object(whatsapp.requests, "post", side_effect=lambda *a, **k: next(replies)):
+            path, message = whatsapp.download_media("MSG", "chat@s.whatsapp.net")
+        self.assertEqual(path, "/tmp/x.ogg")
 
 
 if __name__ == "__main__":
